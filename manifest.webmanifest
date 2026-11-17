@@ -1,0 +1,14 @@
+{
+  "name": "PulseStudio",
+  "short_name": "PulseStudio",
+  "description": "Een all-in-one DAW: opnemen, componeren, mixen en exporteren.",
+  "lang": "nl",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#111113",
+  "theme_color": "#111113",
+  "icons": [
+    { "src": "icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

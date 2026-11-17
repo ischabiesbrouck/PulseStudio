@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "pulsestudio",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8810", "--bind", "127.0.0.1", "--directory", "C:\\Users\\ibiesbrouck\\PulseStudio"],
+      "port": 8810
+    }
+  ]
+}

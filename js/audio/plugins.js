@@ -90,6 +90,7 @@ export const IMPL = {
     c.connect(makeup);
     return {
       input: c, output: makeup,
+      reduction: () => c.reduction,
       update(p, bpm, set) {
         set(c.threshold, p.threshold); set(c.ratio, p.ratio); set(c.attack, p.attack); set(c.release, p.release);
         set(makeup.gain, dbToGain(p.makeup));
@@ -324,6 +325,7 @@ export const IMPL = {
     let last = null;
     return {
       input: pre, output: clip,
+      reduction: () => c.reduction,
       update(p, bpm, set) {
         set(pre.gain, dbToGain(p.gain));
         set(c.threshold, p.ceiling - 2);

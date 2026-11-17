@@ -18,6 +18,14 @@ Een all-in-one DAW (digital audio workstation) in de browser: componeren, opneme
 - **Exporteren** van het hele nummer als WAV (44,1 kHz, 16 bit).
 - **Projecten** worden automatisch opgeslagen in IndexedDB.
 
+## Interface
+
+- Browser links (B) met geluiden, instrumenten en effecten; slepen naar een spoor of de effectenketen, dubbelklikken voegt toe.
+- Apparatenketen per spoor en voor de master, met draaiknoppen en een scherm per apparaat: EQ-curve met versleepbare banden, VU-meter voor gain reduction, echo's van de delay, galmverval, filter- en envelopecurve van de synth, drumpads en sample-golfvorm met versleepbare markeringen.
+- Mixer met inserts, panknop, dB-schaal, stereometers met piekvasthouden en een spectrumanalyser op de master.
+- Fades op audioclips (witte blokjes bovenin de clip), stereometers in de spoorkoppen en een infobalk die uitlegt waar de muis staat.
+- Vormgeving: neutraal grafiet, Archivo en Archivo Narrow, één amber accent en geen decoratieve gloed of kleurverlopen.
+
 ## Starten
 
 ```bash

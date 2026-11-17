@@ -10,8 +10,11 @@ import { createArrange } from './ui/arrange.js';
 import { createEditor } from './ui/editor.js';
 import { createMixer } from './ui/mixer.js';
 import { createInspector } from './ui/inspector.js';
-import { createLibrary } from './ui/library.js';
-import { renderLibraryItem } from './audio/library.js';
+import { createBrowser } from './ui/browser.js';
+import { liveViews } from './ui/devices.js';
+import { renderLibraryItem, LIBRARY } from './audio/library.js';
+import { createInsert, PLUGIN_DEFS } from './audio/plugin-defs.js';
+import { defaultSynth, defaultDrums, DRUM_KEYS, gainToDb } from './model.js';
 
 const buffers = new Map();
 const peaks = new Map();
@@ -38,9 +41,11 @@ const app = {
   pickAudio,
   importAudio,
   pickSample,
-  previewLibrary,
-  addLibrary,
+  dropItem,
+  previewItem,
   showMaster() { state.view.inspectMaster = true; app.showPanel('sound'); },
+  openBrowser(tab, group) { setBrowser(true); browser.openTo(tab, group); },
+  setPanelCtx: (...nodes) => panelCtx.replaceChildren(...nodes.filter(Boolean)),
 };
 
 // ---------- Opbouw van de interface ----------
@@ -49,56 +54,88 @@ const arrange = createArrange(app);
 const editor = createEditor(app);
 const mixer = createMixer(app);
 const inspector = createInspector(app);
-const library = createLibrary(app);
-const panels = { editor, mixer, sound: inspector, library };
-const PANEL_NAMES = { editor: 'Editor', mixer: 'Mixer', sound: 'Klank', library: 'Bibliotheek' };
+const browser = createBrowser(app);
+const panels = { sound: inspector, editor, mixer };
+const PANEL_NAMES = { sound: 'Klank', editor: 'Editor', mixer: 'Mixer' };
+const PANEL_ICONS = { sound: 'dial', editor: 'piano', mixer: 'faders' };
 
 const iconBtn = (name, label, onclick, extra = {}) => h('button.ibtn', { 'aria-label': label, title: label, onclick, ...extra }, icon(name));
 const ui = {};
 ui.back = iconBtn('back', 'Naar het begin (Home)', () => app.seek(0));
-ui.play = iconBtn('play', 'Afspelen / pauze (spatie)', () => togglePlay());
-ui.stop = iconBtn('stop', 'Stop en terug naar het startpunt', () => stopAndReturn());
+ui.play = iconBtn('play', 'Afspelen of pauzeren (spatie)', () => togglePlay(), { class: 'play' });
+ui.stop = iconBtn('stop', 'Stoppen en terug naar het startpunt', () => stopAndReturn());
 ui.rec = iconBtn('record', 'Opnemen (R)', () => toggleRecord(), { class: 'rec' });
-ui.pos = h('span.pos-beat', {}, '1.1.1');
-ui.time = h('span.pos-time', {}, '0:00.0');
-ui.bpm = h('input.bpm', { type: 'number', min: 30, max: 300, step: 1, 'aria-label': 'Tempo in BPM' });
+ui.pos = h('span.lcd-main', {}, '001.1.1');
+ui.time = h('span', {}, '0:00.0');
+ui.sig = h('span', {}, '4/4');
+ui.bpm = h('input.bpm', { type: 'number', min: 30, max: 300, step: 1, 'aria-label': 'Tempo in BPM', title: 'Tempo in BPM (typ een waarde of scroll)' });
 ui.bpm.addEventListener('change', () => {
   const v = clamp(Math.round(+ui.bpm.value || 120), 30, 300);
   commit((p) => { p.bpm = v; });
 });
-ui.loop = iconBtn('loop', 'Loop aan/uit (L)', () => commit((p) => { p.loop.on = !p.loop.on; }, 'loop'));
-ui.metro = iconBtn('metro', 'Metronoom aan/uit (M)', () => commit((p) => { p.metronome = !p.metronome; }, 'transport'));
+ui.bpm.addEventListener('wheel', (e) => { e.preventDefault(); ui.bpm.value = clamp(+ui.bpm.value + (e.deltaY < 0 ? 1 : -1), 30, 300); ui.bpm.dispatchEvent(new Event('change')); }, { passive: false });
+ui.loop = iconBtn('loop', 'Loop aan of uit (L)', () => commit((p) => { p.loop.on = !p.loop.on; }, 'loop'));
+ui.metro = iconBtn('metro', 'Metronoom aan of uit (M)', () => commit((p) => { p.metronome = !p.metronome; }, 'transport'));
 ui.undo = iconBtn('undo', 'Ongedaan maken (Ctrl+Z)', () => undo());
 ui.redo = iconBtn('redo', 'Opnieuw (Ctrl+Shift+Z)', () => redo());
-ui.name = h('input.project-name', { 'aria-label': 'Naam van het project' });
+ui.name = h('input.project-name', { 'aria-label': 'Naam van het project', title: 'Naam van het project' });
 ui.name.addEventListener('change', () => { const v = ui.name.value.trim(); if (v) commit((p) => { p.name = v; }, 'transport'); });
-ui.saved = h('span.saved', {}, '');
+ui.saved = h('span', {}, 'Opgeslagen');
 ui.midi = iconBtn('midi', 'MIDI-keyboard koppelen', () => connectMidi());
+ui.mmL = h('div.mmeter-fill');
+ui.mmR = h('div.mmeter-fill');
+ui.info = h('span.status-info', {}, '');
+ui.rate = h('span', {}, '');
 const filePicker = h('input', { type: 'file', accept: 'audio/*', multiple: true, hidden: true });
 
 const topbar = h('header.topbar', {},
-  h('div.brand', {}, h('span.logo', { 'aria-hidden': 'true' }), 'PulseStudio'),
-  h('div.transport', {}, ui.back, ui.play, ui.stop, ui.rec,
-    h('div.position', { title: 'Positie (maat.tel.zestiende) en tijd' }, ui.pos, ui.time),
-    h('label.bpm-field', {}, ui.bpm, h('span', {}, 'BPM')),
-    ui.loop, ui.metro),
-  h('div.history', {}, ui.undo, ui.redo),
-  h('div.project', {}, ui.name, ui.saved),
-  h('div.actions', {},
-    h('button.btn', { onclick: () => showProjects(), title: 'Projecten openen, maken en verwijderen' }, icon('folder', 16), 'Projecten'),
-    h('button.btn', { onclick: () => pickAudio(null, null), title: 'Audiobestand importeren' }, icon('upload', 16), 'Importeren'),
-    h('button.btn.primary', { onclick: () => exportWav(), title: 'Het hele nummer als WAV-bestand opslaan' }, icon('download', 16), 'Exporteren'),
-    ui.midi,
-    iconBtn('help', 'Sneltoetsen en uitleg', () => showHelp())),
+  h('div.brand', {}, h('span.logo', { 'aria-hidden': 'true' }), h('span', {}, 'PulseStudio')),
+  h('div.crumb', {}, h('button.crumb-link', { onclick: () => showProjects(), title: 'Alle projecten' }, 'Projecten'), h('span.crumb-sep', {}, '/'), ui.name),
+  h('div.transport', {}, ui.back, ui.play, ui.stop, ui.rec, h('span.tsep'),
+    h('div.lcd', { title: 'Positie (maat, tel, zestiende), tijd en maatsoort' }, ui.pos, h('span.lcd-sub', {}, ui.time, ui.sig)),
+    h('label.bpm-box', {}, ui.bpm, h('span', {}, 'BPM')),
+    h('span.tsep'), ui.loop, ui.metro),
+  h('div.topright', {},
+    h('div.mmeter', { title: 'Masterniveau links en rechts' }, h('div.mmeter-bar', {}, ui.mmL), h('div.mmeter-bar', {}, ui.mmR)),
+    ui.undo, ui.redo,
+    h('button.btn', { onclick: () => pickAudio(null, null), title: 'Audiobestand importeren' }, icon('upload', 15), h('span', {}, 'Importeren')),
+    h('button.btn.primary', { onclick: () => exportWav(), title: 'Het hele nummer als WAV-bestand opslaan' }, icon('download', 15), h('span', {}, 'Exporteren'))),
   filePicker);
+
+const railPanels = Object.entries(PANEL_NAMES).map(([key, label]) => iconBtn(PANEL_ICONS[key], `${label} (onderpaneel)`, () => app.showPanel(key), { dataset: { panel: key } }));
+const railBrowser = iconBtn('browser', 'Browser tonen of verbergen (B)', () => setBrowser(!browserOpen));
+const rail = h('nav.rail', { 'aria-label': 'Weergaven' }, railBrowser, h('span.rail-sep'), ...railPanels, h('span.rail-fill'),
+  ui.midi, iconBtn('folder', 'Projecten', () => showProjects()), iconBtn('help', 'Sneltoetsen en uitleg', () => showHelp()));
 
 const tabs = h('nav.tabs', { role: 'tablist' }, Object.entries(PANEL_NAMES).map(([key, label]) =>
   h('button.tab', { role: 'tab', dataset: { panel: key }, onclick: () => app.showPanel(key) }, label)));
+const panelCtx = h('div.panel-ctx');
 const panelBody = h('div.panel-body');
 const splitter = h('div.splitter', { role: 'separator', 'aria-label': 'Paneelhoogte aanpassen', title: 'Sleep om het onderpaneel groter of kleiner te maken' });
-const panel = h('section.panel', {}, tabs, panelBody);
-document.getElementById('app').replaceChildren(topbar, h('main.arrange-wrap', {}, arrange.el), splitter, panel);
+const panel = h('section.panel', {}, h('div.panel-top', {}, tabs, panelCtx), panelBody);
+const center = h('div.center', {}, h('main.arrange-wrap', {}, arrange.el), splitter, panel);
+const workspace = h('div.workspace', {}, rail, browser.el, center);
+const statusbar = h('footer.statusbar', {}, ui.info, ui.rate, ui.saved);
+document.getElementById('app').replaceChildren(topbar, workspace, statusbar);
 arrange.el.addEventListener('pointerdown', () => app.focus('arrange'));
+
+let browserOpen = true;
+function setBrowser(open) {
+  browserOpen = open;
+  workspace.classList.toggle('no-browser', !open);
+  railBrowser.classList.toggle('on', open);
+  try { localStorage.setItem('pulsestudio.browser', open ? '1' : '0'); } catch { /* geen opslag */ }
+  requestAnimationFrame(() => editor.draw());
+}
+try { setBrowser(localStorage.getItem('pulsestudio.browser') !== '0' && window.innerWidth > 1100); } catch { setBrowser(window.innerWidth > 1100); }
+
+// Infobalk onderin: toont uitleg bij waar de muis staat, zoals de infoweergave in professionele DAW's.
+const DEFAULT_INFO = 'Spatie speelt af, R neemt op, B toont de browser. Dubbelklik in een spoor voor een clip, of sleep een geluid uit de browser.';
+ui.info.textContent = DEFAULT_INFO;
+document.addEventListener('pointerover', (e) => {
+  const el = e.target.closest?.('[title], [aria-label]');
+  ui.info.textContent = el?.getAttribute('title') || el?.getAttribute('aria-label') || DEFAULT_INFO;
+});
 
 try { const ph = localStorage.getItem('pulsestudio.panelH'); if (ph) document.body.style.setProperty('--panel-h', `${ph}px`); } catch { /* geen opslag */ }
 splitter.addEventListener('pointerdown', (e) => {
@@ -120,9 +157,12 @@ document.addEventListener('click', (e) => { if (e.detail > 0) e.target.closest('
 // ---------- Tekenen ----------
 
 function renderPanel() {
+  if (!panels[state.view.panel]) state.view.panel = 'sound';
   const name = state.view.panel;
   for (const t of tabs.children) t.setAttribute('aria-selected', String(t.dataset.panel === name));
+  for (const b of railPanels) b.classList.toggle('on', b.dataset.panel === name);
   const p = panels[name];
+  panelCtx.replaceChildren();
   if (panelBody.firstChild !== p.el) panelBody.replaceChildren(p.el);
   p.render();
 }
@@ -140,19 +180,22 @@ function updateTransport() {
   if (document.activeElement !== ui.name) ui.name.value = p.name;
   ui.undo.disabled = !canUndo();
   ui.redo.disabled = !canRedo();
-  document.title = `${p.name} · PulseStudio`;
+  ui.rate.textContent = `${engine.ctx ? `${(engine.ctx.sampleRate / 1000).toFixed(1)} kHz, ` : ''}${p.bpm} BPM, 4/4, ${p.tracks.length} sporen`;
+  document.title = `${p.name} - PulseStudio`;
 }
 
 function renderAll() {
   updateTransport();
   arrange.render();
   renderPanel();
+  browser.render();
 }
 
 function drawPlayhead() {
   const pos = app.playhead();
   arrange.setPlayhead(pos);
-  ui.pos.textContent = formatPosition(pos);
+  const [bar, beat, six] = formatPosition(pos).split('.');
+  ui.pos.textContent = `${bar.padStart(3, '0')}.${beat}.${six}`;
   ui.time.textContent = formatTime(pos * 60 / state.project.bpm);
 }
 
@@ -177,7 +220,7 @@ async function saveNow() {
 
 subscribe((scope) => {
   switch (scope) {
-    case 'select': state.view.inspectMaster = false; arrange.updateSelection(); mixer.updateSelection(); if (!['mixer', 'library'].includes(state.view.panel)) renderPanel(); break;
+    case 'select': state.view.inspectMaster = false; arrange.updateSelection(); mixer.updateSelection(); if (state.view.panel !== 'mixer') renderPanel(); break;
     case 'params': engine.sync(); break;
     case 'notes': arrange.render(); editor.draw(); break;
     case 'arrange': case 'clip': case 'view': arrange.render(); break;
@@ -203,7 +246,15 @@ function frame() {
         if (state.view.panel === 'editor') editor.draw();
       }
     }
-    if (state.view.panel === 'mixer' && engine.ctx) mixer.updateMeters(engine.meters());
+    if (engine.ctx) {
+      const m = engine.meters();
+      arrange.updateMeters(m);
+      const lvl = (x) => clamp((gainToDb(x) + 60) / 66, 0, 1);
+      ui.mmL.style.transform = `scaleX(${lvl(m.master[0])})`;
+      ui.mmR.style.transform = `scaleX(${lvl(m.master[1])})`;
+      if (state.view.panel === 'mixer') mixer.updateMeters(m, engine);
+      if (state.view.panel === 'sound') for (const v of liveViews) v.tick(engine);
+    }
   }
   requestAnimationFrame(frame);
 }
@@ -306,7 +357,6 @@ async function finishRecording() {
 // ---------- Live spelen: toetsenbord en MIDI ----------
 
 const PIANO_KEYS = 'awsedftgyhujkolp';
-const DRUM_KEYS = [36, 38, 39, 37, 42, 46, 45, 50, 49, 51, 56, 70];
 const heldNotes = new Map();
 
 function liveTarget() {
@@ -387,6 +437,7 @@ window.addEventListener('keydown', (e) => {
   if (k === 'r' && !e.repeat) { toggleRecord(); return; }
   if (k === 'l' && !e.repeat) { commit((p) => { p.loop.on = !p.loop.on; }, 'loop'); return; }
   if (k === 'm' && !e.repeat) { commit((p) => { p.metronome = !p.metronome; }, 'transport'); return; }
+  if (k === 'b' && !e.repeat) { setBrowser(!browserOpen); return; }
   if (k === 'z' || k === 'x') {
     state.view.octave = clamp(state.view.octave + (k === 'z' ? -1 : 1), 0, 8);
     toast(`Octaaf ${state.view.octave}`, 900);
@@ -510,34 +561,72 @@ async function libraryBuffer(item) {
   return libCache.get(key);
 }
 
-async function previewLibrary(item) {
+// Voorbeeldweergave vanuit de browser: geluid, synthpreset of drumkit.
+async function previewItem(item) {
   await engine.ensure();
-  engine.previewBuffer(await libraryBuffer(item));
+  if (item.kind === 'sound') engine.previewBuffer(await libraryBuffer(LIBRARY.find((i) => i.id === item.id)));
+  else if (item.kind === 'preset') engine.previewSynth(defaultSynth(item.id), 60);
+  else if (item.kind === 'kit') engine.previewKit(defaultDrums(item.id));
 }
 
-async function addLibrary(item, mode) {
-  const buf = await libraryBuffer(item);
-  const blob = new Blob([encodeWav(channelsOf(buf), buf.sampleRate)], { type: 'audio/wav' });
-  const id = await storeAudio(blob, item.name, buf);
+// Iets uit de browser plaatsen: op een spoor (slepen), of op het geselecteerde spoor (dubbelklik of plusknop).
+async function dropItem(data, { trackId = null, beat = null, useSelection = false } = {}) {
   const p = state.project;
-  if (mode === 'sampler') {
-    const track = createTrack('sampler', p.tracks.length, item.name);
-    Object.assign(track.sampler, { audioId: id, sampleName: item.name, root: item.root });
-    if (item.loop) Object.assign(track.sampler, { loop: true, loopStart: item.loop[0], loopEnd: item.loop[1], release: 0.6 });
-    commit(() => p.tracks.push(track));
-    select(track.id, null);
-    toast(`Samplerspoor "${item.name}" toegevoegd. Dubbelklik in het spoor voor een clip, of speel op je toetsenbord.`, 4000);
+  let target = trackId ? findTrack(trackId) : null;
+  if (useSelection && !state.view.inspectMaster) target = selectedTrack();
+  const at = beat ?? snapFloor(app.playhead(), BEATS_PER_BAR);
+  const newTrack = (kind, name, init) => {
+    const t = createTrack(kind, p.tracks.length, name);
+    init?.(t);
+    commit(() => p.tracks.push(t));
+    select(t.id, null);
+    return t;
+  };
+  if (data.kind === 'sound') {
+    const item = LIBRARY.find((i) => i.id === data.id);
+    if (!item) return;
+    ui.info.textContent = `"${item.name}" wordt gemaakt…`;
+    const buf = await libraryBuffer(item);
+    const blob = new Blob([encodeWav(channelsOf(buf), buf.sampleRate)], { type: 'audio/wav' });
+    const id = await storeAudio(blob, item.name, buf);
+    const sampleProps = { audioId: id, sampleName: item.name, root: item.root ?? 60, loop: !!item.loop, ...(item.loop ? { loopStart: item.loop[0], loopEnd: item.loop[1], release: 0.6 } : {}) };
+    if (data.asSampler || target?.kind === 'sampler') {
+      if (target?.kind === 'sampler') { commit(() => Object.assign(target.sampler, sampleProps)); select(target.id, null); }
+      else newTrack('sampler', item.name, (t) => Object.assign(t.sampler, sampleProps));
+      app.showPanel('sound');
+      toast(`Sampler met "${item.name}". Speel op je toetsenbord of dubbelklik in het spoor voor een clip.`, 3800);
+      return;
+    }
+    let track = target?.kind === 'audio' ? target : null;
+    const clip = createClip('audio', at, buf.duration / (60 / p.bpm), { audioId: id, name: item.name });
+    commit(() => {
+      if (!track) { track = createTrack('audio', p.tracks.length, item.name); p.tracks.push(track); }
+      track.clips.push(clip);
+    });
+    select(track.id, clip.id);
+    toast(`"${item.name}" staat op maat ${Math.floor(clip.start / BEATS_PER_BAR) + 1}.`);
     return;
   }
-  const sel = selectedTrack();
-  let track = sel?.kind === 'audio' ? sel : null;
-  const clip = createClip('audio', snapFloor(app.playhead(), BEATS_PER_BAR), buf.duration / (60 / p.bpm), { audioId: id, name: item.name });
-  commit(() => {
-    if (!track) { track = createTrack('audio', p.tracks.length, item.name); p.tracks.push(track); }
-    track.clips.push(clip);
-  });
-  select(track.id, clip.id);
-  toast(`"${item.name}" staat op maat ${Math.floor(clip.start / BEATS_PER_BAR) + 1}.`);
+  if (data.kind === 'preset') {
+    if (target?.kind === 'synth') { commit(() => { target.synth = defaultSynth(data.id); }); select(target.id, null); app.audition(target, 60, 0.8); }
+    else newTrack('synth', data.id, (t) => { t.synth = defaultSynth(data.id); });
+    app.showPanel('sound');
+    return;
+  }
+  if (data.kind === 'kit') {
+    if (target?.kind === 'drums') { commit(() => { target.drums.kit = data.id; }, 'params'); select(target.id, null); app.audition(target, 36, 0.9); }
+    else newTrack('drums', 'Drums', (t) => { t.drums = defaultDrums(data.id); });
+    app.showPanel('sound');
+    return;
+  }
+  if (data.kind === 'fx') {
+    if (useSelection && state.view.inspectMaster) { commit(() => p.masterInserts.push(createInsert(data.id))); app.showMaster(); return; }
+    if (!target) { toast('Sleep een effect op een spoor, of in de keten in het Klank-paneel.'); return; }
+    commit(() => target.inserts.push(createInsert(data.id)));
+    select(target.id, null);
+    app.showPanel('sound');
+    toast(`${PLUGIN_DEFS[data.id].name} toegevoegd aan "${target.name}".`);
+  }
 }
 
 // ---------- Exporteren ----------
@@ -583,7 +672,7 @@ async function openProject(raw) {
 
 function dialog(title, ...content) {
   const dlg = h('dialog.dlg', {},
-    h('div.dlg-head', {}, h('h2', {}, title), h('button.ibtn', { 'aria-label': 'Sluiten', onclick: () => dlg.close() }, '✕')),
+    h('div.dlg-head', {}, h('h2', {}, title), h('button.ibtn', { 'aria-label': 'Sluiten', onclick: () => dlg.close() }, icon('close', 16))),
     ...content);
   dlg.addEventListener('close', () => dlg.remove());
   document.body.append(dlg);

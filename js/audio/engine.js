@@ -1,7 +1,7 @@
 // Audio-engine: transport met vooruitplannen (lookahead), live spelen, meters en offline renderen.
 import { TrackChain, masterTrack, readPeak } from './chain.js';
 import { synthVoice, samplerVoice, drumHit } from './instruments.js';
-import { eventsInRange, audioStartsInRange, nextSegment, isAudible, projectEnd } from '../model.js';
+import { eventsInRange, audioStartsInRange, nextSegment, isAudible, projectEnd, audioGainEnvelope } from '../model.js';
 
 const LOOKAHEAD = 0.15; // seconden vooruit plannen
 const STEP = 0.5;       // tellen per planstap
@@ -32,9 +32,12 @@ function scheduleWindow({ ctx, chains, master, project, buffers, from, to, time,
     const src = ctx.createBufferSource();
     src.buffer = buf;
     const g = ctx.createGain();
-    g.gain.value = a.clip.gain ?? 1;
     src.connect(g).connect(chain.input);
     const t = time + (a.beat - from) * spb;
+    audioGainEnvelope(a.clip, a.offsetBeats, spb).forEach(([dt, gain], i) => {
+      if (i === 0) g.gain.setValueAtTime(gain, t);
+      else g.gain.linearRampToValueAtTime(gain, t + dt);
+    });
     const dur = Math.min((a.clip.length - a.offsetBeats) * spb, buf.duration - offset);
     src.start(t, offset, dur);
     sources.push({ src, end: t + dur });
@@ -60,7 +63,7 @@ export class Engine {
   async ensure() {
     if (!this.ctx) {
       this.ctx = new AudioContext({ latencyHint: 'interactive' });
-      this.master = new TrackChain(this.ctx, this.ctx.destination);
+      this.master = new TrackChain(this.ctx, this.ctx.destination, { spectrum: true });
       this.scratch = new Float32Array(1024);
       this.sync();
     }
@@ -195,11 +198,36 @@ export class Engine {
 
   stopPreview() { try { this.previewSrc?.stop(); } catch { /* al gestopt */ } this.previewSrc = null; }
 
+  // Speelt een synthpreset of een drumkit los af (voorbeluisteren in de browser).
+  previewSynth(params, pitch = 60) {
+    for (const p of [pitch, pitch + 4, pitch + 7]) synthVoice(this.ctx, this.master.input, params, p, 0.75, this.ctx.currentTime + 0.02).release(this.ctx.currentTime + 0.7);
+  }
+
+  previewKit(kit) {
+    const t = this.ctx.currentTime + 0.03;
+    const choke = {};
+    [[36, 0], [42, 0.25], [38, 0.5], [42, 0.75], [36, 1], [36, 1.25], [38, 1.5], [46, 1.75]].forEach(([p, b]) => drumHit(this.ctx, this.master.input, kit, p, 0.9, t + b * 0.25, { choke }));
+  }
+
+  // Stereo piekniveaus [L, R] per spoor en voor de master.
   meters() {
     const tracks = new Map();
-    if (!this.ctx) return { master: 0, tracks };
-    for (const [id, chain] of this.chains) tracks.set(id, readPeak(chain.analyser, this.scratch));
-    return { master: readPeak(this.master.analyser, this.scratch), tracks };
+    if (!this.ctx) return { master: [0, 0], tracks };
+    const stereo = (chain) => [readPeak(chain.analyserL, this.scratch), readPeak(chain.analyserR, this.scratch)];
+    for (const [id, chain] of this.chains) tracks.set(id, stereo(chain));
+    return { master: stereo(this.master), tracks };
+  }
+
+  // Gain reduction (dB, negatief) van een compressor of limiter in een keten.
+  reduction(chainKey, insId) {
+    const chain = chainKey === 'master' ? this.master : this.chains.get(chainKey);
+    return chain?.slots.find((s) => s.id === insId)?.fx.reduction?.() ?? 0;
+  }
+
+  spectrum(out) {
+    if (!this.master?.spectrum) return false;
+    this.master.spectrum.getFloatFrequencyData(out);
+    return true;
   }
 }
 

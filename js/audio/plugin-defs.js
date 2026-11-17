@@ -16,12 +16,12 @@ export const PLUGIN_DEFS = {
     params: {
       lowCut: hz('Low cut', 20, 20, 1000),
       lowFreq: hz('Laag', 120, 30, 600),
-      low: db('Laag gain'),
-      midFreq: hz('Midden', 1000, 150, 8000),
-      mid: db('Midden gain'),
-      midQ: { label: 'Breedte (Q)', def: 0.9, min: 0.2, max: 8, step: 0.1, curve: 'exp' },
+      low: db('Laag dB'),
+      midFreq: hz('Mid', 1000, 150, 8000),
+      mid: db('Mid dB'),
+      midQ: { label: 'Q', def: 0.9, min: 0.2, max: 8, step: 0.1, curve: 'exp' },
       highFreq: hz('Hoog', 6000, 1500, 16000),
-      high: db('Hoog gain'),
+      high: db('Hoog dB'),
     },
   },
   comp: {
@@ -106,7 +106,7 @@ export function normalizeInsert(ins) {
 
 export const defaultMasterInserts = () => [
   createInsert('comp', { threshold: -12, ratio: 2, attack: 0.02, release: 0.25, makeup: 1.5 }),
-  createInsert('limiter', { gain: 2, ceiling: -1 }),
+  createInsert('limiter', { gain: 0, ceiling: -1 }),
 ];
 
 // Zet de vaste effectenset van versie 0.1 om naar een lijst inserts.

@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   createProject, createTrack, createClip, eventsInRange, audioStartsInRange, nextSegment, formatPosition,
-  isAudible, projectEnd, clipFromRecording, quantizeNotes, duplicateClip, migrate, demoProject, noteName, midiToFreq,
+  isAudible, projectEnd, clipFromRecording, quantizeNotes, duplicateClip, migrate, demoProject, noteName, midiToFreq, audioGainEnvelope,
 } from '../js/model.js';
 
 function projectWithClip(notes, { start = 0, length = 4, pattern } = {}) {
@@ -64,6 +64,18 @@ test('audioclips: start in het venster en lopende clips', () => {
   assert.equal(audioStartsInRange(p, 2, 3)[0].offsetBeats, 0);
   assert.equal(audioStartsInRange(p, 5, 6).length, 0);
   assert.equal(audioStartsInRange(p, 5, 6, true)[0].offsetBeats, 3);
+});
+
+test('fades op audioclips', () => {
+  const clip = createClip('audio', 0, 8, { audioId: 'a', gain: 1, fadeIn: 2, fadeOut: 4 });
+  assert.deepEqual(audioGainEnvelope(clip, 0, 0.5), [[0, 0], [1, 1], [2, 1], [4, 0]]);
+  // Halverwege de fade-in beginnen
+  assert.deepEqual(audioGainEnvelope(clip, 1, 0.5), [[0, 0.5], [0.5, 1], [1.5, 1], [3.5, 0]]);
+  // Zonder fades: alleen begin en einde, op het clipvolume
+  assert.deepEqual(audioGainEnvelope({ ...clip, fadeIn: 0, fadeOut: 0, gain: 0.8 }, 0, 1), [[0, 0.8], [8, 0.8]]);
+  // Te lange fades worden naar verhouding ingekort
+  const env = audioGainEnvelope({ ...clip, fadeIn: 8, fadeOut: 8 }, 0, 1);
+  assert.deepEqual(env.map(([t]) => t), [0, 4, 8]);
 });
 
 test('positie en nootnamen', () => {

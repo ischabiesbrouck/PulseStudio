@@ -4,7 +4,7 @@ import { createInsert, normalizeInsert, defaultMasterInserts, fxToInserts } from
 
 export const BEATS_PER_BAR = 4;
 export const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-export const TRACK_COLORS = ['#e0a23b', '#5aa9e6', '#7bc47f', '#d9677a', '#a98ee6', '#4fc1b6', '#e6865a', '#c9c15a'];
+export const TRACK_COLORS = ['#e8a33d', '#9b7bd1', '#4fb6a6', '#d4668f', '#5b8fd6', '#d9694a', '#9fbf55', '#c9b84f'];
 
 // Rijen van de drumcomputer, van boven naar beneden, met General MIDI-nootnummers.
 export const DRUM_ROWS = [
@@ -21,6 +21,9 @@ export const DRUM_ROWS = [
   { p: 38, name: 'Snare' },
   { p: 36, name: 'Kick' },
 ];
+
+// Volgorde van de drumgeluiden onder de toetsen A W S E D F T G Y H U J.
+export const DRUM_KEYS = [36, 38, 39, 37, 42, 46, 45, 50, 49, 51, 56, 70];
 
 // Alle synth-instellingen met hun standaardwaarde; presets overschrijven alleen wat anders is.
 export const BASE_SYNTH = {
@@ -123,7 +126,7 @@ export function createTrack(kind, index = 0, name) {
 }
 
 export function createClip(kind, start, length = BEATS_PER_BAR, extra = {}) {
-  if (kind === 'audio') return { id: uid('c'), start, length, name: '', audioId: null, offset: 0, gain: 1, ...extra };
+  if (kind === 'audio') return { id: uid('c'), start, length, name: '', audioId: null, offset: 0, gain: 1, fadeIn: 0, fadeOut: 0, ...extra };
   return { id: uid('c'), start, length, pattern: length, name: '', notes: [], ...extra };
 }
 
@@ -181,6 +184,19 @@ export function audioStartsInRange(project, from, to, spanning = false) {
     }
   }
   return out;
+}
+
+// Volume-envelope van een audioclip met fade in/uit, vanaf `offsetBeats` in de clip.
+// Geeft punten [seconden vanaf het begin, gain] terug; daartussen loopt de gain lineair.
+export function audioGainEnvelope(clip, offsetBeats, spb) {
+  const L = clip.length;
+  const g = clip.gain ?? 1;
+  let fi = Math.max(0, clip.fadeIn || 0), fo = Math.max(0, clip.fadeOut || 0);
+  if (fi + fo > L) { const k = L / (fi + fo); fi *= k; fo *= k; }
+  const gainAt = (x) => g * Math.min(1, fi > 0 ? x / fi : 1, fo > 0 ? (L - x) / fo : 1);
+  const xs = [offsetBeats, fi, L - fo, L].filter((x, i) => i === 0 || (x > offsetBeats && x <= L));
+  const uniq = [...new Set(xs.map((x) => +x.toFixed(9)))].sort((a, b) => a - b);
+  return uniq.map((x) => [(x - offsetBeats) * spb, Math.max(0, gainAt(x))]);
 }
 
 // Volgend stuk om in te plannen vanaf `beat`; springt bij het loopeinde terug naar het loopbegin.

@@ -10,18 +10,31 @@ export function readPeak(analyser, scratch) {
 }
 
 export class TrackChain {
-  constructor(ctx, dest) {
+  constructor(ctx, dest, { spectrum = false } = {}) {
     this.ctx = ctx;
     this.input = ctx.createGain();
     this.post = ctx.createGain();
     this.panner = ctx.createStereoPanner();
     this.fader = ctx.createGain();
-    this.analyser = ctx.createAnalyser();
-    this.analyser.fftSize = 512;
     this.input.connect(this.post);
     this.post.connect(this.panner).connect(this.fader);
-    this.fader.connect(this.analyser);
     this.fader.connect(dest);
+    // Stereometers: links en rechts apart meten.
+    if (!(ctx instanceof OfflineAudioContext)) {
+      const split = ctx.createChannelSplitter(2);
+      this.analyserL = ctx.createAnalyser();
+      this.analyserR = ctx.createAnalyser();
+      this.analyserL.fftSize = this.analyserR.fftSize = 512;
+      this.fader.connect(split);
+      split.connect(this.analyserL, 0);
+      split.connect(this.analyserR, 1);
+      if (spectrum) {
+        this.spectrum = ctx.createAnalyser();
+        this.spectrum.fftSize = 4096;
+        this.spectrum.smoothingTimeConstant = 0.82;
+        this.fader.connect(this.spectrum);
+      }
+    }
     this.slots = [];
     this.signature = '';
     this.choke = {};

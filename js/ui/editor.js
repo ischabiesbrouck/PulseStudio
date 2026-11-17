@@ -1,16 +1,18 @@
 // Clip-editor: pianorol voor synthclips, stappenraster voor drumclips, instellingen voor audioclips.
 import { state, gesture, commit, selectedClip, trackOfClip } from '../state.js';
 import { DRUM_ROWS, BEATS_PER_BAR, noteName, isBlackKey, snap, snapFloor, patternOf, quantizeNotes, clamp } from '../model.js';
-import { h, select, fitCanvas, param } from './dom.js';
+import { h, select, fitCanvas } from './dom.js';
+import { knob } from './knob.js';
 
-const RULER_H = 20;
+const RULER_H = 22;
 const VEL_H = 60;
 const LOW = 21;
 const HIGH = 108;
 const C = {
-  bg: '#141417', row: '#1b1b1f', rowBlack: '#161619', line: '#232328', beat: '#2e2e35', bar: '#45454e',
-  text: '#8e8e96', key: '#d6d6db', keyBlack: '#2b2b31', ruler: '#1e1e23', shade: 'rgba(0,0,0,0.45)', accent: '#f2a33a',
+  bg: '#161618', row: '#1c1c1f', rowBlack: '#18181b', line: 'rgba(255,255,255,0.035)', beat: 'rgba(255,255,255,0.075)', bar: 'rgba(255,255,255,0.17)',
+  text: '#8a8a96', key: '#d9d9df', keyBlack: '#1c1c22', ruler: '#101013', shade: 'rgba(0,0,0,0.55)', accent: '#f29a2e',
 };
+const MONO = '"Archivo Narrow", "Archivo", system-ui, sans-serif';
 const GRIDS = [[1, '1/4'], [0.5, '1/8'], [0.25, '1/16'], [0.125, '1/32'], [1 / 3, '1/8 triool'], [1 / 6, '1/16 triool']];
 
 export function createEditor(app) {
@@ -74,10 +76,15 @@ export function createEditor(app) {
     name.addEventListener('change', () => commit(() => { clip.name = name.value.trim(); }));
     const head = h('span.ed-track', { style: { '--tc': track.color } }, track.name);
     if (track.kind === 'audio') {
+      const K = (label, key, min, max, step, format, def) => knob({ label, min, max, step, def, format, scope: 'clip', get: () => clip[key] ?? def, set: (v) => { clip[key] = v; } });
+      const beats = (v) => `${v.toFixed(2)} tel`;
       return [head, name,
-        param({ label: 'Volume', min: 0, max: 2, step: 0.01, def: 1, get: () => clip.gain ?? 1, set: (v) => { clip.gain = v; }, format: (v) => `${Math.round(v * 100)}%`, scope: 'clip' }),
-        param({ label: 'Begin in bestand', min: 0, max: Math.max(0.1, app.buffers.get(clip.audioId)?.duration || 0), step: 0.01, def: 0, get: () => clip.offset || 0, set: (v) => { clip.offset = v; }, format: (v) => `${v.toFixed(2)} s`, scope: 'clip' }),
-        h('p.hint', {}, 'Sleep de rechterrand van de clip om hem korter of langer te maken.')];
+        h('div.ed-knobs', {},
+          K('Volume', 'gain', 0, 2, 0.01, (v) => `${Math.round(v * 100)}%`, 1),
+          K('Begin', 'offset', 0, Math.max(0.1, app.buffers.get(clip.audioId)?.duration || 0), 0.01, (v) => `${v.toFixed(2)}s`, 0),
+          K('Fade in', 'fadeIn', 0, Math.max(0.25, clip.length / 2), 0.01, beats, 0),
+          K('Fade uit', 'fadeOut', 0, Math.max(0.25, clip.length / 2), 0.01, beats, 0)),
+        h('p.hint', {}, 'Sleep de rechterrand van de clip voor de lengte, en de witte blokjes bovenin voor fades.')];
     }
     const pl = patternOf(clip);
     const bars = [1, 2, 4, 8, 16].map((b) => [b * BEATS_PER_BAR, `${b} ${b === 1 ? 'maat' : 'maten'}`]);
@@ -121,6 +128,8 @@ export function createEditor(app) {
     }
     const grid = state.view.grid;
     const b0 = Math.max(0, snapFloor(beatOf(kw, drums), grid)), b1 = beatOf(W, drums);
+    g.fillStyle = 'rgba(255,255,255,0.016)';
+    for (let bar = 1; bar * BEATS_PER_BAR <= b1; bar += 2) g.fillRect(xOf(bar * BEATS_PER_BAR, drums), RULER_H, BEATS_PER_BAR * zx, gridBottom - RULER_H);
     for (let b = b0; b <= b1; b += grid) {
       const isBar = Math.abs(b / BEATS_PER_BAR - Math.round(b / BEATS_PER_BAR)) < 1e-6;
       const isBeat = Math.abs(b - Math.round(b)) < 1e-6;
@@ -130,22 +139,33 @@ export function createEditor(app) {
     g.fillStyle = C.shade;
     g.fillRect(Math.max(kw, xOf(pl, drums)), RULER_H, W, gridBottom - RULER_H);
 
+    g.font = `600 9px ${MONO}`;
+    g.textBaseline = 'middle';
     for (const n of clip.notes) {
       const r = pitchToRow(n.p, drums);
       if (r < 0 || r >= rowCount(drums)) continue;
-      const x = xOf(n.t, drums), y = yOf(r, drums);
-      const w = Math.max(3, n.d * zx - 1);
-      g.globalAlpha = n.t >= pl ? 0.25 : 0.45 + 0.55 * n.v;
+      const x = xOf(n.t, drums) + 0.5, y = yOf(r, drums) + 1;
+      const w = Math.max(4, n.d * zx - 1.5), nh = rh - 2;
+      const rad = Math.min(3, nh / 2);
+      g.globalAlpha = n.t >= pl ? 0.25 : 0.5 + 0.5 * n.v;
       g.fillStyle = track.color;
-      g.fillRect(x + 0.5, y + 1, w, rh - 2);
+      if (n === selNote) { }
+      g.beginPath();
+      g.roundRect ? g.roundRect(x, y, w, nh, rad) : g.rect(x, y, w, nh);
+      g.fill();
       g.globalAlpha = 1;
-      if (n === selNote) { g.strokeStyle = '#fff'; g.lineWidth = 1.5; g.strokeRect(x + 0.5, y + 1, w, rh - 2); }
+      g.fillStyle = 'rgba(255,255,255,0.35)';
+      g.fillRect(x + rad, y + 0.5, Math.max(0, w - rad * 2), 1);
+      g.strokeStyle = n === selNote ? '#fff' : 'rgba(0,0,0,0.45)';
+      g.lineWidth = n === selNote ? 1.5 : 1;
+      g.stroke();
+      if (!drums && w > 30 && nh >= 11) { g.fillStyle = 'rgba(10,10,12,0.75)'; g.fillText(noteName(n.p), x + 4, y + nh / 2 + 0.5); }
     }
     const pos = app.playing() ? app.playhead() : null;
     if (pos != null && pos >= clip.start && pos < clip.start + clip.length) {
       const x = xOf((pos - clip.start) % pl, drums);
-      g.fillStyle = C.accent;
-      g.fillRect(x, RULER_H, 1.5, gridBottom - RULER_H);
+      g.fillStyle = '#fff';
+      g.fillRect(x, RULER_H, 1, gridBottom - RULER_H);
     }
     g.restore();
 
@@ -154,45 +174,54 @@ export function createEditor(app) {
     g.beginPath();
     g.rect(0, RULER_H, kw, gridBottom - RULER_H);
     g.clip();
-    g.font = '11px system-ui, sans-serif';
     g.textBaseline = 'middle';
     for (let r = r0; r <= r1; r++) {
       const p = rowToPitch(r, drums), y = yOf(r, drums);
       if (drums) {
-        g.fillStyle = r % 2 ? '#202025' : '#1b1b20';
+        g.fillStyle = r % 2 ? '#17171c' : '#131317';
         g.fillRect(0, y, kw, rh);
+        g.fillStyle = 'rgba(255,255,255,0.05)';
+        g.fillRect(0, y + rh - 1, kw, 1);
         g.fillStyle = C.key;
-        g.fillText(DRUM_ROWS[r].name, 10, y + rh / 2);
+        g.font = `600 12px ${MONO}`;
+        g.fillText(DRUM_ROWS[r].name, 12, y + rh / 2);
       } else {
         const black = isBlackKey(p);
-        g.fillStyle = black ? C.keyBlack : C.key;
-        g.fillRect(0, y, black ? kw * 0.62 : kw, rh - 1);
-        if (p % 12 === 0) { g.fillStyle = '#55555e'; g.fillText(noteName(p), kw - 26, y + rh / 2); }
+        g.fillStyle = C.key;
+        g.fillRect(0, y, kw, rh - 1);
+        if (black) { g.fillStyle = C.keyBlack; g.fillRect(0, y - 1, kw * 0.62, rh + 1); }
+        if (p % 12 === 0) { g.fillStyle = '#55555e'; g.font = `600 10px ${MONO}`; g.fillText(noteName(p), kw - 25, y + rh / 2); }
       }
     }
+    g.fillStyle = 'rgba(0,0,0,0.6)';
+    g.fillRect(kw - 1, RULER_H, 1, gridBottom - RULER_H);
     g.restore();
 
     // Liniaal
     g.fillStyle = C.ruler;
     g.fillRect(0, 0, W, RULER_H);
-    g.fillStyle = C.text;
-    g.font = '11px system-ui, sans-serif';
+    g.fillStyle = 'rgba(255,255,255,0.1)';
+    g.fillRect(0, RULER_H - 1, W, 1);
+    g.font = `500 10px ${MONO}`;
     g.textBaseline = 'middle';
     for (let b = Math.floor(beatOf(kw, drums)); b <= b1; b++) {
       if (b < 0) continue;
       const x = xOf(b, drums);
       if (x < kw) continue;
-      if (b % BEATS_PER_BAR === 0) g.fillText(String(b / BEATS_PER_BAR + 1), x + 4, RULER_H / 2);
-      g.fillRect(x, b % BEATS_PER_BAR === 0 ? 4 : 13, 1, RULER_H);
+      g.fillStyle = b % BEATS_PER_BAR === 0 ? 'rgba(255,255,255,0.3)' : 'rgba(255,255,255,0.12)';
+      g.fillRect(Math.round(x), b % BEATS_PER_BAR === 0 ? 4 : 15, 1, RULER_H);
+      if (b % BEATS_PER_BAR === 0) { g.fillStyle = C.text; g.fillText(String(b / BEATS_PER_BAR + 1), x + 5, RULER_H / 2); }
     }
+    if (pl * zx + kw - sx < W) { g.fillStyle = C.accent; g.fillRect(xOf(pl, drums) - 1, 0, 2, RULER_H); }
 
     // Velocity
-    g.fillStyle = '#18181c';
+    g.fillStyle = '#0f0f12';
     g.fillRect(0, gridBottom, W, VEL_H);
-    g.fillStyle = C.bar;
+    g.fillStyle = 'rgba(255,255,255,0.1)';
     g.fillRect(0, gridBottom, W, 1);
     g.fillStyle = C.text;
-    g.fillText('Velocity', 8, gridBottom + 14);
+    g.font = `600 9px ${MONO}`;
+    g.fillText('Velocity', 10, gridBottom + 14);
     g.save();
     g.beginPath();
     g.rect(kw, gridBottom, W - kw, VEL_H);

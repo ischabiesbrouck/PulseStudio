@@ -1,6 +1,6 @@
 // Arrangeerweergave: tijdlijn met sporen, clips, liniaal, loopgebied en afspeelkop.
 import { state, commit, gesture, select, findTrack, findClip } from '../state.js';
-import { BEATS_PER_BAR, projectEnd, patternOf, createClip, createTrack, snap, snapFloor, clamp, uid } from '../model.js';
+import { BEATS_PER_BAR, KIND_NAMES, projectEnd, patternOf, createClip, createTrack, snap, snapFloor, clamp, uid } from '../model.js';
 import { h, icon, param } from './dom.js';
 
 export const HEADER_W = 210;
@@ -93,7 +93,7 @@ export function createArrange(app) {
       input.addEventListener('blur', done, { once: true });
       input.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') input.blur(); if (ev.key === 'Escape') { input.value = track.name; input.blur(); } });
     });
-    const kind = { synth: 'Synth', drums: 'Drums', audio: 'Audio' }[track.kind];
+    const kind = KIND_NAMES[track.kind];
     const header = h('div.arr-header', { class: sel ? 'selected' : null, onpointerdown: () => select(track.id, null) },
       h('span.tcolor', { style: { background: track.color } }),
       h('div.tmain', {},
@@ -237,7 +237,7 @@ export function createArrange(app) {
         app.showPanel('sound');
       },
     }, icon('plus', 14), label);
-    return h('div.arr-row.add-row', {}, h('div.arr-header.add', {}, add('synth', 'Synth'), add('drums', 'Drums'), add('audio', 'Audio')), h('div.lane.empty'));
+    return h('div.arr-row.add-row', {}, h('div.arr-header.add', {}, add('synth', 'Synth'), add('drums', 'Drums'), add('sampler', 'Sampler'), add('audio', 'Audio')), h('div.lane.empty'));
   }
 
   function setPlayhead(beat) {

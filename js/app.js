@@ -10,6 +10,8 @@ import { createArrange } from './ui/arrange.js';
 import { createEditor } from './ui/editor.js';
 import { createMixer } from './ui/mixer.js';
 import { createInspector } from './ui/inspector.js';
+import { createLibrary } from './ui/library.js';
+import { renderLibraryItem } from './audio/library.js';
 
 const buffers = new Map();
 const peaks = new Map();
@@ -35,6 +37,10 @@ const app = {
   audition(track, pitch, vel = 0.8) { engine.ensure().then(() => engine.preview(track, pitch, vel)); },
   pickAudio,
   importAudio,
+  pickSample,
+  previewLibrary,
+  addLibrary,
+  showMaster() { state.view.inspectMaster = true; app.showPanel('sound'); },
 };
 
 // ---------- Opbouw van de interface ----------
@@ -43,8 +49,9 @@ const arrange = createArrange(app);
 const editor = createEditor(app);
 const mixer = createMixer(app);
 const inspector = createInspector(app);
-const panels = { editor, mixer, sound: inspector };
-const PANEL_NAMES = { editor: 'Editor', mixer: 'Mixer', sound: 'Klank' };
+const library = createLibrary(app);
+const panels = { editor, mixer, sound: inspector, library };
+const PANEL_NAMES = { editor: 'Editor', mixer: 'Mixer', sound: 'Klank', library: 'Bibliotheek' };
 
 const iconBtn = (name, label, onclick, extra = {}) => h('button.ibtn', { 'aria-label': label, title: label, onclick, ...extra }, icon(name));
 const ui = {};
@@ -170,7 +177,7 @@ async function saveNow() {
 
 subscribe((scope) => {
   switch (scope) {
-    case 'select': arrange.updateSelection(); mixer.updateSelection(); if (state.view.panel !== 'mixer') renderPanel(); break;
+    case 'select': state.view.inspectMaster = false; arrange.updateSelection(); mixer.updateSelection(); if (!['mixer', 'library'].includes(state.view.panel)) renderPanel(); break;
     case 'params': engine.sync(); break;
     case 'notes': arrange.render(); editor.draw(); break;
     case 'arrange': case 'clip': case 'view': arrange.render(); break;
@@ -299,7 +306,7 @@ async function finishRecording() {
 // ---------- Live spelen: toetsenbord en MIDI ----------
 
 const PIANO_KEYS = 'awsedftgyhujkolp';
-const DRUM_KEYS = [36, 38, 39, 42, 46, 45, 50, 49];
+const DRUM_KEYS = [36, 38, 39, 37, 42, 46, 45, 50, 49, 51, 56, 70];
 const heldNotes = new Map();
 
 function liveTarget() {
@@ -462,6 +469,75 @@ async function importAudio(file, trackId, beat) {
   });
   select(track.id, clip.id);
   return clip;
+}
+
+// Bewaart een AudioBuffer of bestand als audio van dit project en geeft het id terug.
+async function storeAudio(blob, name, buf) {
+  const id = uid('a');
+  await store.saveAudio({ id, projectId: state.project.id, name, blob });
+  registerAudio(id, buf);
+  return id;
+}
+
+// Laat de gebruiker een sample kiezen (voor de sampler of een drumpad).
+const samplePicker = h('input', { type: 'file', accept: 'audio/*', hidden: true });
+document.body.append(samplePicker);
+function pickSample() {
+  return new Promise((resolve) => {
+    samplePicker.value = '';
+    samplePicker.onchange = async () => {
+      const file = samplePicker.files[0];
+      if (!file) return resolve(null);
+      try {
+        const buf = await engine.decode(await file.arrayBuffer());
+        const name = file.name.replace(/\.[^.]+$/, '');
+        resolve({ id: await storeAudio(file, name, buf), name });
+      } catch {
+        toast(`"${file.name}" kan niet worden gelezen als audio.`, 3500);
+        resolve(null);
+      }
+    };
+    samplePicker.click();
+  });
+}
+
+// ---------- Bibliotheek ----------
+
+const libCache = new Map();
+async function libraryBuffer(item) {
+  const key = `${item.id}@${state.project.bpm}`;
+  if (!libCache.has(key)) libCache.set(key, await renderLibraryItem(item, state.project.bpm));
+  return libCache.get(key);
+}
+
+async function previewLibrary(item) {
+  await engine.ensure();
+  engine.previewBuffer(await libraryBuffer(item));
+}
+
+async function addLibrary(item, mode) {
+  const buf = await libraryBuffer(item);
+  const blob = new Blob([encodeWav(channelsOf(buf), buf.sampleRate)], { type: 'audio/wav' });
+  const id = await storeAudio(blob, item.name, buf);
+  const p = state.project;
+  if (mode === 'sampler') {
+    const track = createTrack('sampler', p.tracks.length, item.name);
+    Object.assign(track.sampler, { audioId: id, sampleName: item.name, root: item.root });
+    if (item.loop) Object.assign(track.sampler, { loop: true, loopStart: item.loop[0], loopEnd: item.loop[1], release: 0.6 });
+    commit(() => p.tracks.push(track));
+    select(track.id, null);
+    toast(`Samplerspoor "${item.name}" toegevoegd. Dubbelklik in het spoor voor een clip, of speel op je toetsenbord.`, 4000);
+    return;
+  }
+  const sel = selectedTrack();
+  let track = sel?.kind === 'audio' ? sel : null;
+  const clip = createClip('audio', snapFloor(app.playhead(), BEATS_PER_BAR), buf.duration / (60 / p.bpm), { audioId: id, name: item.name });
+  commit(() => {
+    if (!track) { track = createTrack('audio', p.tracks.length, item.name); p.tracks.push(track); }
+    track.clips.push(clip);
+  });
+  select(track.id, clip.id);
+  toast(`"${item.name}" staat op maat ${Math.floor(clip.start / BEATS_PER_BAR) + 1}.`);
 }
 
 // ---------- Exporteren ----------

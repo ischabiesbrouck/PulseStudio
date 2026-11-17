@@ -1,25 +1,27 @@
 // Audio-engine: transport met vooruitplannen (lookahead), live spelen, meters en offline renderen.
-import { TrackChain, createMaster, readPeak } from './chain.js';
-import { synthVoice, drumHit } from './instruments.js';
-import { eventsInRange, audioStartsInRange, nextSegment, isAudible, projectEnd, dbToGain } from '../model.js';
+import { TrackChain, masterTrack, readPeak } from './chain.js';
+import { synthVoice, samplerVoice, drumHit } from './instruments.js';
+import { eventsInRange, audioStartsInRange, nextSegment, isAudible, projectEnd } from '../model.js';
 
 const LOOKAHEAD = 0.15; // seconden vooruit plannen
 const STEP = 0.5;       // tellen per planstap
 
-function playEvent(ctx, chain, track, pitch, vel, time, durSec) {
-  if (track.kind === 'drums') return drumHit(ctx, chain.input, track.drums, pitch, vel, time);
-  const v = synthVoice(ctx, chain.input, track.synth, pitch, vel, time);
+function playEvent(ctx, chain, track, pitch, vel, time, durSec, buffers) {
+  if (track.kind === 'drums') return drumHit(ctx, chain.input, track.drums, pitch, vel, time, { buffers, choke: chain.choke });
+  const v = track.kind === 'sampler'
+    ? samplerVoice(ctx, chain.input, track.sampler, buffers.get(track.sampler.audioId), pitch, vel, time)
+    : synthVoice(ctx, chain.input, track.synth, pitch, vel, time);
   if (durSec != null) v.release(time + durSec);
   return v;
 }
 
-// Plant alle noten en audioclips in [from, to), waarbij tel `from` op tijd `time` valt.
-function scheduleWindow({ ctx, chains, project, buffers, from, to, time, spb, spanning, voices, sources }) {
+// Plant alle noten, audioclips en tempo-effecten in [from, to), waarbij tel `from` op tijd `time` valt.
+function scheduleWindow({ ctx, chains, master, project, buffers, from, to, time, spb, spanning, voices, sources }) {
   for (const ev of eventsInRange(project, from, to)) {
     const chain = chains.get(ev.track.id);
     if (!chain) continue;
     const t = time + (ev.beat - from) * spb;
-    voices.push(playEvent(ctx, chain, ev.track, ev.note.p, ev.note.v, t, ev.dur * spb));
+    voices.push(playEvent(ctx, chain, ev.track, ev.note.p, ev.note.v, t, ev.dur * spb, buffers));
   }
   for (const a of audioStartsInRange(project, from, to, spanning)) {
     const chain = chains.get(a.track.id);
@@ -37,6 +39,8 @@ function scheduleWindow({ ctx, chains, project, buffers, from, to, time, spb, sp
     src.start(t, offset, dur);
     sources.push({ src, end: t + dur });
   }
+  for (const chain of chains.values()) chain.schedule(from, to, time, spb);
+  master.schedule(from, to, time, spb);
 }
 
 export class Engine {
@@ -56,7 +60,7 @@ export class Engine {
   async ensure() {
     if (!this.ctx) {
       this.ctx = new AudioContext({ latencyHint: 'interactive' });
-      this.master = createMaster(this.ctx);
+      this.master = new TrackChain(this.ctx, this.ctx.destination);
       this.scratch = new Float32Array(1024);
       this.sync();
     }
@@ -82,7 +86,7 @@ export class Engine {
       chain.update(track, p.bpm, isAudible(track, p.tracks));
     }
     for (const [id, chain] of this.chains) if (!ids.has(id)) { chain.dispose(); this.chains.delete(id); }
-    this.master.setVolume(p.masterVolume);
+    this.master.update(masterTrack(p), p.bpm, true);
   }
 
   play(fromBeat) {
@@ -108,7 +112,7 @@ export class Engine {
         this.anchors.push({ time: this.cursorTime, beat: seg.from, spb });
       }
       scheduleWindow({
-        ctx: this.ctx, chains: this.chains, project: p, buffers: this.buffers,
+        ctx: this.ctx, chains: this.chains, master: this.master, project: p, buffers: this.buffers,
         from: seg.from, to: seg.to, time: this.cursorTime, spb, spanning: this.spanning,
         voices: this.voices, sources: this.sources,
       });
@@ -129,7 +133,7 @@ export class Engine {
       o.frequency.value = b % 4 === 0 ? 1600 : 1050;
       g.gain.setValueAtTime(0.25, t);
       g.gain.exponentialRampToValueAtTime(0.001, t + 0.04);
-      o.connect(g).connect(this.master.input);
+      o.connect(g).connect(this.ctx.destination);
       o.start(t);
       o.stop(t + 0.05);
     }
@@ -151,6 +155,8 @@ export class Engine {
     this.playing = false;
     for (const v of this.voices) v.stopNow();
     for (const s of this.sources) try { s.src.stop(); } catch { /* nog niet gestart */ }
+    for (const chain of this.chains.values()) chain.reset();
+    this.master?.reset();
     this.voices = [];
     this.sources = [];
     this.anchors = [];
@@ -161,7 +167,7 @@ export class Engine {
     if (!chain || track.kind === 'audio') return;
     const key = `${track.id}:${pitch}`;
     this.live.get(key)?.release(this.ctx.currentTime);
-    this.live.set(key, playEvent(this.ctx, chain, track, pitch, vel, this.ctx.currentTime, null));
+    this.live.set(key, playEvent(this.ctx, chain, track, pitch, vel, this.ctx.currentTime, null, this.buffers));
   }
 
   noteOff(track, pitch) {
@@ -173,8 +179,21 @@ export class Engine {
   preview(track, pitch, vel = 0.8, seconds = 0.35) {
     const chain = this.chains.get(track.id);
     if (!chain || track.kind === 'audio') return;
-    playEvent(this.ctx, chain, track, pitch, vel, this.ctx.currentTime, seconds);
+    playEvent(this.ctx, chain, track, pitch, vel, this.ctx.currentTime, seconds, this.buffers);
   }
+
+  // Speelt een losse buffer af via de master (voorbeluisteren in de bibliotheek).
+  previewBuffer(buf) {
+    this.previewSrc?.stop();
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(this.master.input);
+    src.start();
+    this.previewSrc = src;
+    src.onended = () => { if (this.previewSrc === src) this.previewSrc = null; };
+  }
+
+  stopPreview() { try { this.previewSrc?.stop(); } catch { /* al gestopt */ } this.previewSrc = null; }
 
   meters() {
     const tracks = new Map();
@@ -185,19 +204,19 @@ export class Engine {
 }
 
 // Rendert het hele project (zonder loop) naar een AudioBuffer.
-export async function renderProject(project, buffers, { sampleRate = 44100, tail = 2.5 } = {}) {
+export async function renderProject(project, buffers, { sampleRate = 44100, tail = 3 } = {}) {
   const end = projectEnd(project);
   if (end <= 0) throw new Error('Het project is leeg.');
   const spb = 60 / project.bpm;
   const ctx = new OfflineAudioContext(2, Math.ceil((end * spb + tail) * sampleRate), sampleRate);
-  const master = createMaster(ctx);
-  master.input.gain.value = dbToGain(project.masterVolume);
+  const master = new TrackChain(ctx, ctx.destination);
+  master.update(masterTrack(project), project.bpm, true, true);
   const chains = new Map();
   for (const track of project.tracks) {
     const chain = new TrackChain(ctx, master.input);
     chain.update(track, project.bpm, isAudible(track, project.tracks), true);
     chains.set(track.id, chain);
   }
-  scheduleWindow({ ctx, chains, project, buffers, from: 0, to: end, time: 0, spb, spanning: true, voices: [], sources: [] });
+  scheduleWindow({ ctx, chains, master, project, buffers, from: 0, to: end, time: 0, spb, spanning: true, voices: [], sources: [] });
   return ctx.startRendering();
 }

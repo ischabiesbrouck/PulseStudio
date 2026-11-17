@@ -1,5 +1,6 @@
 // Projectmodel: pure functies zonder browser-API's, zodat ze met node --test te testen zijn.
 // Tijd wordt overal in tellen (kwartnoten) uitgedrukt; een maat is 4 tellen (4/4).
+import { createInsert, normalizeInsert, defaultMasterInserts, fxToInserts } from './audio/plugin-defs.js';
 
 export const BEATS_PER_BAR = 4;
 export const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -8,21 +9,54 @@ export const TRACK_COLORS = ['#e0a23b', '#5aa9e6', '#7bc47f', '#d9677a', '#a98ee
 // Rijen van de drumcomputer, van boven naar beneden, met General MIDI-nootnummers.
 export const DRUM_ROWS = [
   { p: 49, name: 'Crash' },
+  { p: 51, name: 'Ride' },
   { p: 46, name: 'Hihat open' },
   { p: 42, name: 'Hihat dicht' },
+  { p: 70, name: 'Shaker' },
+  { p: 56, name: 'Cowbell' },
   { p: 50, name: 'Tom hoog' },
   { p: 45, name: 'Tom laag' },
+  { p: 37, name: 'Rimshot' },
   { p: 39, name: 'Clap' },
   { p: 38, name: 'Snare' },
   { p: 36, name: 'Kick' },
 ];
 
+// Alle synth-instellingen met hun standaardwaarde; presets overschrijven alleen wat anders is.
+export const BASE_SYNTH = {
+  wave1: 'sawtooth', unison: 1, uniDetune: 20, uniSpread: 0.7,
+  wave2: 'square', osc2Oct: 0, osc2Semi: 0, detune: 7, mix: 0.4,
+  fm: 0, fmDecay: 0.4, fmSustain: 0.3, sub: 0, noise: 0,
+  filterType: 'lowpass', slope: 12, cutoff: 1800, reso: 2, envAmt: 3000, keyTrack: 0.3,
+  fAttack: 0.005, fDecay: 0.3, fSustain: 0.3, drive: 0,
+  attack: 0.005, decay: 0.3, sustain: 0.7, release: 0.2,
+  lfoWave: 'sine', lfoTarget: 'pitch', lfoRate: 5, lfoAmount: 0,
+  gain: 0.5,
+};
+
 export const SYNTH_PRESETS = {
-  Lead: { wave1: 'sawtooth', wave2: 'square', osc2Oct: 0, detune: 12, mix: 0.4, cutoff: 1800, reso: 6, envAmt: 3500, attack: 0.005, decay: 0.25, sustain: 0.6, release: 0.18, gain: 0.5 },
-  Bas: { wave1: 'sawtooth', wave2: 'sine', osc2Oct: -1, detune: 4, mix: 0.5, cutoff: 420, reso: 8, envAmt: 1600, attack: 0.002, decay: 0.18, sustain: 0.35, release: 0.08, gain: 0.7 },
-  Pad: { wave1: 'sawtooth', wave2: 'sawtooth', osc2Oct: 0, detune: 22, mix: 0.5, cutoff: 1200, reso: 1, envAmt: 900, attack: 0.6, decay: 1.2, sustain: 0.8, release: 1.4, gain: 0.35 },
-  Pluk: { wave1: 'square', wave2: 'triangle', osc2Oct: 1, detune: 6, mix: 0.35, cutoff: 900, reso: 4, envAmt: 5000, attack: 0.001, decay: 0.22, sustain: 0, release: 0.2, gain: 0.5 },
-  Keys: { wave1: 'triangle', wave2: 'sine', osc2Oct: 1, detune: 3, mix: 0.3, cutoff: 2600, reso: 0.7, envAmt: 1500, attack: 0.004, decay: 0.9, sustain: 0.3, release: 0.35, gain: 0.55 },
+  Bas: { cat: 'Bas', wave1: 'sawtooth', wave2: 'sine', osc2Oct: -1, detune: 4, mix: 0.5, cutoff: 420, reso: 8, envAmt: 1600, fDecay: 0.18, fSustain: 0.1, attack: 0.002, decay: 0.18, sustain: 0.35, release: 0.08, gain: 0.7 },
+  'Sub-bas': { cat: 'Bas', wave1: 'sine', mix: 0, sub: 0.3, cutoff: 400, reso: 0.5, envAmt: 200, sustain: 1, release: 0.12, drive: 0.2, gain: 0.5 },
+  'Reese-bas': { cat: 'Bas', wave1: 'sawtooth', unison: 3, uniDetune: 30, uniSpread: 0.3, wave2: 'sawtooth', osc2Oct: -1, mix: 0.4, slope: 24, cutoff: 700, reso: 3, envAmt: 400, sustain: 1, release: 0.15, lfoTarget: 'filter', lfoRate: 0.3, lfoAmount: 0.25, drive: 0.3, gain: 0.55 },
+  'Acid-bas': { cat: 'Bas', wave1: 'sawtooth', mix: 0, cutoff: 300, reso: 16, envAmt: 3500, fDecay: 0.22, fSustain: 0, decay: 0.3, sustain: 0.6, release: 0.05, drive: 0.5, keyTrack: 0.5, gain: 0.5 },
+  'FM-bas': { cat: 'Bas', wave1: 'sine', wave2: 'sine', mix: 0, fm: 0.8, fmDecay: 0.25, fmSustain: 0.1, sub: 0.3, cutoff: 2500, envAmt: 1000, sustain: 0.8, release: 0.1, gain: 0.45 },
+  Lead: { cat: 'Lead', wave1: 'sawtooth', wave2: 'square', detune: 12, mix: 0.4, cutoff: 1800, reso: 6, envAmt: 3500, fDecay: 0.25, fSustain: 0.4, attack: 0.005, decay: 0.25, sustain: 0.6, release: 0.18, gain: 0.5 },
+  Supersaw: { cat: 'Lead', wave1: 'sawtooth', unison: 7, uniDetune: 35, uniSpread: 0.9, wave2: 'square', osc2Oct: 1, mix: 0.15, cutoff: 3500, reso: 1, envAmt: 3000, fDecay: 0.5, fSustain: 0.5, attack: 0.01, sustain: 0.8, release: 0.3, gain: 0.45 },
+  'Blok-lead': { cat: 'Lead', wave1: 'square', wave2: 'square', osc2Semi: 7, mix: 0.25, cutoff: 2200, reso: 3, envAmt: 2000, release: 0.15, lfoTarget: 'pitch', lfoRate: 5.5, lfoAmount: 0.25, gain: 0.45 },
+  Fluit: { cat: 'Lead', wave1: 'sine', wave2: 'triangle', osc2Oct: 1, mix: 0.15, noise: 0.06, cutoff: 3000, reso: 0.7, envAmt: 500, attack: 0.06, sustain: 0.9, release: 0.25, lfoRate: 5, lfoAmount: 0.2, gain: 0.5 },
+  Pad: { cat: 'Pad', wave1: 'sawtooth', unison: 3, uniDetune: 18, wave2: 'sawtooth', detune: 22, mix: 0.5, cutoff: 1200, reso: 1, envAmt: 900, fAttack: 0.6, fDecay: 1.2, fSustain: 0.6, attack: 0.6, decay: 1.2, sustain: 0.8, release: 1.4, gain: 0.35 },
+  'Warme pad': { cat: 'Pad', wave1: 'sawtooth', unison: 5, uniDetune: 25, wave2: 'triangle', osc2Oct: -1, mix: 0.3, cutoff: 900, reso: 1, envAmt: 800, fAttack: 1.2, fDecay: 2, fSustain: 0.6, attack: 1, decay: 1.5, sustain: 0.85, release: 2, lfoTarget: 'filter', lfoRate: 0.2, lfoAmount: 0.15, gain: 0.35 },
+  Strijkers: { cat: 'Pad', wave1: 'sawtooth', unison: 4, uniDetune: 18, uniSpread: 0.8, wave2: 'sawtooth', detune: 9, mix: 0.4, cutoff: 2200, reso: 0.7, envAmt: 500, fAttack: 0.4, attack: 0.35, sustain: 0.9, release: 0.7, lfoRate: 5.2, lfoAmount: 0.12, gain: 0.4 },
+  Glaspad: { cat: 'Pad', wave1: 'triangle', unison: 3, uniDetune: 12, wave2: 'sine', osc2Oct: 2, mix: 0.35, fm: 0.15, fmSustain: 0.6, cutoff: 5000, envAmt: 0, attack: 0.8, sustain: 0.8, release: 2.5, lfoTarget: 'amp', lfoRate: 3, lfoAmount: 0.2, gain: 0.4 },
+  Keys: { cat: 'Keys', wave1: 'triangle', wave2: 'sine', osc2Oct: 1, detune: 3, mix: 0.3, cutoff: 2600, reso: 0.7, envAmt: 1500, fDecay: 0.6, fSustain: 0.2, attack: 0.004, decay: 0.9, sustain: 0.3, release: 0.35, gain: 0.55 },
+  'E-piano': { cat: 'Keys', wave1: 'sine', wave2: 'sine', mix: 0, fm: 0.9, fmDecay: 0.6, fmSustain: 0.1, cutoff: 6000, envAmt: 0, attack: 0.002, decay: 1.8, sustain: 0.15, release: 0.4, lfoTarget: 'amp', lfoRate: 4.5, lfoAmount: 0.12, gain: 0.6 },
+  Orgel: { cat: 'Keys', wave1: 'sine', wave2: 'sine', osc2Oct: 1, mix: 0.45, sub: 0.35, cutoff: 7000, envAmt: 0, attack: 0.005, sustain: 1, release: 0.05, lfoRate: 6.5, lfoAmount: 0.08, drive: 0.15, gain: 0.45 },
+  Klok: { cat: 'Keys', wave1: 'sine', wave2: 'sine', osc2Oct: 1, osc2Semi: 6, mix: 0, fm: 0.7, fmDecay: 2, fmSustain: 0.2, cutoff: 9000, envAmt: 0, attack: 0.001, decay: 2.5, sustain: 0, release: 1.5, gain: 0.45 },
+  Marimba: { cat: 'Keys', wave1: 'sine', wave2: 'sine', osc2Oct: 2, mix: 0.2, fm: 0.2, fmDecay: 0.08, fmSustain: 0, cutoff: 5000, envAmt: 0, attack: 0.001, decay: 0.45, sustain: 0, release: 0.3, gain: 0.6 },
+  Pluk: { cat: 'Pluk', wave1: 'square', wave2: 'triangle', osc2Oct: 1, detune: 6, mix: 0.35, cutoff: 900, reso: 4, envAmt: 5000, fDecay: 0.22, fSustain: 0, attack: 0.001, decay: 0.22, sustain: 0, release: 0.2, gain: 0.5 },
+  Kalimba: { cat: 'Pluk', wave1: 'triangle', wave2: 'sine', osc2Oct: 2, mix: 0.25, fm: 0.1, cutoff: 4000, envAmt: 2000, fDecay: 0.2, fSustain: 0, attack: 0.001, decay: 0.7, sustain: 0, release: 0.5, gain: 0.55 },
+  Stab: { cat: 'Pluk', wave1: 'sawtooth', unison: 3, uniDetune: 15, wave2: 'square', mix: 0.3, cutoff: 1200, reso: 5, envAmt: 5000, fDecay: 0.15, fSustain: 0, attack: 0.002, decay: 0.25, sustain: 0, release: 0.15, gain: 0.5 },
+  Koperblazers: { cat: 'Pluk', wave1: 'sawtooth', unison: 2, uniDetune: 8, wave2: 'sawtooth', detune: 5, mix: 0.4, cutoff: 700, reso: 1.5, envAmt: 3500, fAttack: 0.06, fDecay: 0.4, fSustain: 0.45, attack: 0.04, decay: 0.3, sustain: 0.8, release: 0.2, lfoRate: 5, lfoAmount: 0.08, gain: 0.45 },
 };
 
 let counter = 0;
@@ -55,16 +89,18 @@ export function formatTime(seconds) {
   return `${m}:${(s % 60).toFixed(1).padStart(4, '0')}`;
 }
 
-export const defaultSynth = (preset = 'Lead') => ({ preset, ...structuredClone(SYNTH_PRESETS[preset] || SYNTH_PRESETS.Lead) });
-export const defaultDrums = () => ({ tune: 0, decay: 1, level: 0.9 });
-export const defaultFx = () => ({
-  eq: { low: 0, mid: 0, high: 0 },
-  comp: { on: false, threshold: -18, ratio: 4 },
-  delay: { on: false, time: 0.75, feedback: 0.35, mix: 0.25 },
-  reverb: { on: false, size: 2.2, mix: 0.25 },
+export function defaultSynth(preset = 'Lead') {
+  const name = SYNTH_PRESETS[preset] ? preset : 'Lead';
+  const { cat, ...params } = SYNTH_PRESETS[name];
+  return { preset: name, ...BASE_SYNTH, ...params };
+}
+export const defaultDrums = (kit = '808') => ({ kit, tune: 0, decay: 1, level: 0.9, pads: {} });
+export const defaultSampler = () => ({
+  audioId: null, sampleName: '', root: 60, fine: 0, start: 0, loop: false, loopStart: 0.3, loopEnd: 0.9,
+  attack: 0.003, decay: 0.5, sustain: 1, release: 0.3, cutoff: 18000, gain: 0.8,
 });
 
-const KIND_NAMES = { synth: 'Synth', drums: 'Drums', audio: 'Audio' };
+export const KIND_NAMES = { synth: 'Synth', drums: 'Drums', sampler: 'Sampler', audio: 'Audio' };
 
 export function createTrack(kind, index = 0, name) {
   const t = {
@@ -77,11 +113,12 @@ export function createTrack(kind, index = 0, name) {
     mute: false,
     solo: false,
     arm: false,
-    fx: defaultFx(),
+    inserts: [],
     clips: [],
   };
   if (kind === 'synth') t.synth = defaultSynth();
   if (kind === 'drums') t.drums = defaultDrums();
+  if (kind === 'sampler') t.sampler = defaultSampler();
   return t;
 }
 
@@ -92,7 +129,7 @@ export function createClip(kind, start, length = BEATS_PER_BAR, extra = {}) {
 
 export function createProject(name = 'Nieuw project') {
   const now = Date.now();
-  return { id: uid('p'), version: 1, name, bpm: 120, loop: { on: true, start: 0, end: 16 }, metronome: false, masterVolume: 0, tracks: [], created: now, updated: now };
+  return { id: uid('p'), version: 2, name, bpm: 120, loop: { on: true, start: 0, end: 16 }, metronome: false, masterVolume: 0, masterInserts: defaultMasterInserts(), tracks: [], created: now, updated: now };
 }
 
 export const clipEnd = (c) => c.start + c.length;
@@ -183,14 +220,16 @@ export function clipFromRecording(kind, startBeat, endBeat, events, grid = 0) {
 
 // Vult ontbrekende velden aan in projecten van oudere versies.
 export function migrate(project) {
-  const p = { ...createProject(project.name), ...project };
+  const p = { ...createProject(project.name), ...project, version: 2 };
   p.loop = { ...createProject().loop, ...project.loop };
+  p.masterInserts = project.masterInserts ? project.masterInserts.map(normalizeInsert).filter(Boolean) : defaultMasterInserts();
   p.tracks = (project.tracks || []).map((t, i) => {
-    const base = createTrack(t.kind, i);
-    const track = { ...base, ...t, fx: { ...defaultFx(), ...t.fx } };
-    for (const k of Object.keys(defaultFx())) track.fx[k] = { ...defaultFx()[k], ...(t.fx || {})[k] };
+    const { fx, ...rest } = t;
+    const track = { ...createTrack(t.kind, i), ...rest };
+    track.inserts = t.inserts ? t.inserts.map(normalizeInsert).filter(Boolean) : fxToInserts(fx);
     if (t.kind === 'synth') track.synth = { ...defaultSynth(t.synth?.preset), ...t.synth };
-    if (t.kind === 'drums') track.drums = { ...defaultDrums(), ...t.drums };
+    if (t.kind === 'drums') track.drums = { ...defaultDrums(), ...t.drums, pads: { ...t.drums?.pads } };
+    if (t.kind === 'sampler') track.sampler = { ...defaultSampler(), ...t.sampler };
     track.clips = (t.clips || []).map((c) => ({ ...createClip(t.kind, 0), ...c }));
     return track;
   });
@@ -204,15 +243,18 @@ export function demoProject() {
   p.loop = { on: true, start: 0, end: 32 };
 
   const drums = createTrack('drums', 0, 'Drums');
+  drums.drums = defaultDrums('909');
+  drums.inserts = [createInsert('comp', { threshold: -16, ratio: 3, attack: 0.015, release: 0.12, makeup: 2 }), createInsert('sat', { drive: 6, mix: 0.4 })];
   const beat = createClip('drums', 0, 32, { pattern: 4, name: 'Groove' });
   for (let i = 0; i < 4; i++) beat.notes.push({ t: i, d: 0.25, p: 36, v: 0.95 });
-  for (const t of [1, 3]) beat.notes.push({ t, d: 0.25, p: 38, v: 0.85 });
-  for (let i = 0; i < 7; i++) beat.notes.push({ t: i * 0.5, d: 0.25, p: 42, v: i % 2 ? 0.45 : 0.7 });
-  beat.notes.push({ t: 3.5, d: 0.25, p: 46, v: 0.6 });
+  for (const t of [1, 3]) beat.notes.push({ t, d: 0.25, p: 38, v: 0.8 }, { t, d: 0.25, p: 39, v: 0.6 });
+  for (let i = 0; i < 4; i++) beat.notes.push({ t: i + 0.5, d: 0.25, p: i === 3 ? 46 : 42, v: 0.7 });
+  for (let i = 0; i < 16; i++) beat.notes.push({ t: i * 0.25, d: 0.25, p: 70, v: i % 4 === 2 ? 0.55 : 0.3 });
   drums.clips.push(beat);
 
   const bass = createTrack('synth', 1, 'Bas');
   bass.synth = defaultSynth('Bas');
+  bass.inserts = [createInsert('pump', { amount: 0.6 })];
   const bassline = createClip('synth', 0, 32, { pattern: 16, name: 'Baslijn' });
   const roots = [45, 41, 48, 43]; // A, F, C, G
   roots.forEach((root, bar) => {
@@ -223,17 +265,16 @@ export function demoProject() {
   bass.clips.push(bassline);
 
   const pad = createTrack('synth', 2, 'Akkoorden');
-  pad.synth = defaultSynth('Pad');
-  pad.fx.reverb = { on: true, size: 3, mix: 0.35 };
+  pad.synth = defaultSynth('Warme pad');
+  pad.inserts = [createInsert('chorus', { mix: 0.35 }), createInsert('pump', { amount: 0.75 }), createInsert('reverb', { size: 3.5, mix: 0.3 })];
   const chords = createClip('synth', 0, 32, { pattern: 16, name: 'Akkoorden' });
   const voicings = [[57, 60, 64], [53, 57, 60], [55, 60, 64], [55, 59, 62]];
   voicings.forEach((v, bar) => v.forEach((pitch) => chords.notes.push({ t: bar * 4, d: 3.9, p: pitch, v: 0.7 })));
   pad.clips.push(chords);
 
   const lead = createTrack('synth', 3, 'Melodie');
-  lead.synth = defaultSynth('Pluk');
-  lead.fx.delay = { on: true, time: 0.75, feedback: 0.4, mix: 0.3 };
-  lead.fx.reverb = { on: true, size: 2, mix: 0.2 };
+  lead.synth = defaultSynth('Kalimba');
+  lead.inserts = [createInsert('delay', { time: 0.75, feedback: 0.4, mix: 0.28 }), createInsert('reverb', { size: 2.2, mix: 0.22 })];
   const melody = createClip('synth', 16, 16, { pattern: 16, name: 'Melodie' });
   const line = [[0, 76], [0.5, 72], [1, 69], [2, 72], [2.5, 74], [4, 72], [4.5, 69], [5, 65], [6, 69], [6.5, 72], [8, 72], [8.5, 76], [9, 79], [10, 76], [12, 74], [12.5, 71], [13, 67], [14, 71]];
   for (const [t, pch] of line) melody.notes.push({ t, d: 0.45, p: pch, v: 0.8 });

@@ -43,7 +43,7 @@ export function createMixer(app) {
       h('div.strip-fader', {},
         masterMeter,
         param({ label: 'Volume', min: -60, max: 6, step: 0.5, def: 0, vertical: true, get: () => p.masterVolume, set: (v) => { p.masterVolume = v; }, format: dbText })),
-      h('div.strip-btns'));
+      h('div.strip-btns', {}, h('button.tbtn', { onclick: () => app.showMaster(), title: 'Effecten op de master bewerken' }, 'FX')));
     root.replaceChildren(...p.tracks.map(strip), master);
   }
 

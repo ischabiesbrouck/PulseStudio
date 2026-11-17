@@ -93,10 +93,25 @@ test('opname wordt een clip op hele maten', () => {
 
 test('migrate vult ontbrekende velden aan', () => {
   const p = migrate({ id: 'x', name: 'Oud', bpm: 100, tracks: [{ id: 't', kind: 'synth', name: 'S', clips: [{ id: 'c', start: 0, length: 4, notes: [] }] }] });
-  assert.equal(p.tracks[0].fx.reverb.on, false);
+  assert.deepEqual(p.tracks[0].inserts, []);
   assert.equal(p.tracks[0].synth.preset, 'Lead');
+  assert.equal(p.tracks[0].synth.unison, 1);
   assert.equal(p.loop.on, true);
   assert.equal(p.bpm, 100);
+  assert.equal(p.masterInserts.length, 2);
+});
+
+test('migrate zet de oude vaste effecten om naar inserts', () => {
+  const fx = { eq: { low: 0, mid: 0, high: 0 }, comp: { on: false, threshold: -18, ratio: 4 }, delay: { on: true, time: 0.5, feedback: 0.3, mix: 0.2 }, reverb: { on: true, size: 2, mix: 0.3 } };
+  const p = migrate({ id: 'x', name: 'Oud', tracks: [{ id: 't', kind: 'drums', name: 'D', fx, drums: { tune: 2, decay: 1, level: 0.8 }, clips: [] }] });
+  const t = p.tracks[0];
+  assert.equal(t.fx, undefined);
+  assert.deepEqual(t.inserts.map((i) => i.type), ['delay', 'reverb']);
+  assert.equal(t.inserts[0].params.time, 0.5);
+  assert.equal(t.inserts[0].params.pingpong, false);
+  assert.equal(t.drums.kit, '808');
+  assert.equal(t.drums.tune, 2);
+  assert.deepEqual(t.drums.pads, {});
 });
 
 test('het voorbeeldproject is geldig', () => {

@@ -6,6 +6,7 @@ import { getInstrument, loadInstrument, pickZone, loadKit, isSampleKit } from '.
 import { loadWorklets, hasWorklets } from './plugins.js';
 import { playbackFor, prepareProject } from './warp.js';
 import { LoudnessMeter } from './loudness.js';
+import { wamMidi, wamState } from './wam.js';
 
 const LOOKAHEAD = 0.15; // seconden vooruit plannen
 const STEP = 0.5;       // tellen per planstap
@@ -30,8 +31,29 @@ export function preloadProject(project, onProgress) {
   return Promise.allSettled(jobs);
 }
 
+// Noot naar een instrument-plug-in: MIDI note on/off met tijdstempel.
+function pluginVoice(ctx, chain, pitch, vel, time) {
+  const node = chain.instrument?.inst?.audioNode;
+  const voice = { end: Infinity, released: false, release() {}, stopNow() {} };
+  if (!node) { voice.end = time; return voice; }
+  wamMidi(node, [0x90, pitch & 127, Math.max(1, Math.min(127, Math.round(vel * 127)))], time);
+  voice.release = (t) => {
+    if (voice.released) return;
+    voice.released = true;
+    voice.end = Math.max(t, time + 0.005);
+    wamMidi(node, [0x80, pitch & 127, 0], voice.end);
+  };
+  voice.stopNow = () => voice.release(ctx.currentTime);
+  return voice;
+}
+
 function playEvent(ctx, chain, track, pitch, vel, time, durSec, buffers) {
   if (track.kind === 'drums') return drumHit(ctx, chain.input, track.drums, pitch, vel, time, { buffers, choke: chain.choke });
+  if (track.kind === 'plugin') {
+    const v = pluginVoice(ctx, chain, pitch, vel, time);
+    if (durSec != null) v.release(time + durSec);
+    return v;
+  }
   const v = track.kind === 'sampler'
     ? samplerVoice(ctx, chain.input, track.sampler, samplerZone(track.sampler, pitch, buffers), pitch, vel, time)
     : synthVoice(ctx, chain.input, track.synth, pitch, vel, time);
@@ -154,6 +176,7 @@ export class Engine {
       let chain = this.chains.get(track.id);
       if (!chain) this.chains.set(track.id, (chain = new TrackChain(this.ctx, this.master.input)));
       chain.update(track, p.bpm, isAudible(track, p.tracks), false, this.returns);
+      if (track.kind === 'plugin') chain.setInstrument(track.plugin);
     }
     for (const [id, chain] of this.chains) if (!ids.has(id)) { chain.dispose(); this.chains.delete(id); }
     this.master.update(masterTrack(p), p.bpm, true);
@@ -161,6 +184,35 @@ export class Engine {
   }
 
   chainFor(key) { return key === 'master' ? this.master : this.chains.get(key) || this.returns.get(key); }
+
+  // De geladen plug-in (WAM) van een insert of van een instrumentspoor: { inst, error, ready, gui }.
+  wam(chainKey, insId = null) {
+    const chain = this.chainFor(chainKey);
+    if (!chain) return null;
+    return insId ? chain.slots.find((s) => s.id === insId)?.fx || null : chain.instrument || null;
+  }
+
+  // Zet de actuele toestand van alle plug-ins in het project (vóór opslaan en exporteren).
+  async collectWamStates(p) {
+    if (!this.ctx) return false;
+    const jobs = [];
+    let changed = false;
+    const take = (holder, target) => {
+      if (!holder?.inst) return;
+      jobs.push(wamState(holder.inst).then((s) => {
+        if (s != null && JSON.stringify(s) !== JSON.stringify(target.state)) { target.state = s; changed = true; }
+      }));
+    };
+    const scan = (key, inserts) => { for (const ins of inserts || []) if (ins.type === 'wam') take(this.wam(key, ins.id), ins.wam); };
+    for (const t of p.tracks) {
+      scan(t.id, t.inserts);
+      if (t.kind === 'plugin' && t.plugin) take(this.wam(t.id), t.plugin);
+    }
+    for (const r of p.returns || []) scan(r.id, r.inserts);
+    scan('master', p.masterInserts);
+    await Promise.all(jobs);
+    return changed;
+  }
 
   play(fromBeat) {
     if (this.playing) this.stop();
@@ -229,6 +281,11 @@ export class Engine {
     this.playing = false;
     for (const v of this.voices) v.stopNow();
     for (const s of this.sources) try { s.src.stop(); } catch { /* nog niet gestart */ }
+    // Instrument-plug-ins: alle noten uit (ook noten die al vooruit gepland waren).
+    for (const chain of this.chains.values()) {
+      const node = chain.instrument?.inst?.audioNode;
+      if (node) { const t = this.ctx.currentTime + LOOKAHEAD + 0.03; wamMidi(node, [0xb0, 123, 0], t); wamMidi(node, [0xb0, 120, 0], t); }
+    }
     for (const chain of this.chains.values()) chain.reset();
     for (const chain of this.returns.values()) chain.reset();
     this.master?.reset();
@@ -344,8 +401,11 @@ export async function renderProject(project, buffers, { sampleRate = 44100, tail
     if (only && track.id !== only) continue;
     const chain = new TrackChain(ctx, master.input);
     chain.update(track, project.bpm, isAudible(track, tracks), true, returns);
+    if (track.kind === 'plugin') chain.setInstrument(track.plugin);
     chains.set(track.id, chain);
   }
+  // Plug-ins (WAM) laden asynchroon; pas plannen als alles klaar is.
+  await Promise.all([master, ...returns.values(), ...chains.values()].map((c) => c.ready()));
   scheduleWindow({ ctx, chains, returns, master, project: p, buffers, from: 0, to: last, time: 0, spb, spanning: true, voices: [], sources: [] });
   return ctx.startRendering();
 }

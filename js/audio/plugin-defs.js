@@ -137,6 +137,13 @@ export const PLUGIN_DEFS = {
   },
 };
 
+// Externe plug-in (Web Audio Module): de instellingen zitten in de plug-in zelf (`ins.wam.state`).
+PLUGIN_DEFS.wam = { name: 'Plug-in', info: 'Web Audio Module (WAM 2.0): een plug-in van een andere maker.', params: {}, external: true };
+
+export function createWamInsert({ url, name, vendor = '' }, state = null) {
+  return { ...createInsert('wam'), wam: { url, name, vendor, state } };
+}
+
 // Indeling in de browser.
 export const PLUGIN_CATS = [
   ['Dynamiek', ['comp', 'multiband', 'limiter', 'maximizer', 'gate', 'transient', 'deesser']],
@@ -242,7 +249,10 @@ export function createInsert(type, params = {}) {
 
 export function normalizeInsert(ins) {
   if (!PLUGIN_DEFS[ins.type]) return null;
-  return { id: ins.id || fxId(), type: ins.type, on: ins.on !== false, params: { ...defaultParams(ins.type), ...ins.params } };
+  if (ins.type === 'wam' && !ins.wam?.url) return null;
+  const out = { id: ins.id || fxId(), type: ins.type, on: ins.on !== false, params: { ...defaultParams(ins.type), ...ins.params } };
+  if (ins.type === 'wam') out.wam = { url: ins.wam.url, name: ins.wam.name || 'Plug-in', vendor: ins.wam.vendor || '', state: ins.wam.state ?? null };
+  return out;
 }
 
 export const defaultMasterInserts = () => [

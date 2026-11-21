@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createClip, createProject, migrate, demoProject, audioTimeRatio, audioSegments, audioSourceAt, splitClip } from '../js/model.js';
+import { createTrack, createClip, createProject, migrate, demoProject, audioTimeRatio, audioSegments, audioSourceAt, splitClip } from '../js/model.js';
 import { integrated, measure, lufs } from '../js/audio/loudness.js';
 import { crc32, zipFiles, encodeWav } from '../js/wav.js';
-import { PLUGIN_DEFS, PLUGIN_CATS } from '../js/audio/plugin-defs.js';
+import { PLUGIN_DEFS, PLUGIN_CATS, createWamInsert } from '../js/audio/plugin-defs.js';
 
 const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) < eps, `${a} ≠ ${b}`);
 
@@ -74,9 +74,26 @@ test('returns en sends in nieuwe en oude projecten', () => {
   assert.equal(again.returns[0].id, demo.returns[0].id);
 });
 
+test('plug-ins (WAM) blijven bewaard bij opslaan en openen', () => {
+  const p = createProject();
+  const t = createTrack('plugin', 0, 'Synth-101');
+  t.plugin = { url: 'https://example.org/synth/index.js', name: 'Synth-101', vendor: 'X', state: { cutoff: 0.4 } };
+  t.inserts.push(createWamInsert({ url: 'https://example.org/fx/index.js', name: 'Big Muff', vendor: 'Y' }, { drive: 3 }));
+  t.inserts.push({ id: 'kapot', type: 'wam', on: true, params: {} }); // zonder adres: valt weg
+  p.tracks.push(t);
+  const back = migrate(JSON.parse(JSON.stringify(p)));
+  const bt = back.tracks[0];
+  assert.equal(bt.kind, 'plugin');
+  assert.deepEqual(bt.plugin.state, { cutoff: 0.4 });
+  assert.equal(bt.inserts.length, 1);
+  assert.equal(bt.inserts[0].wam.name, 'Big Muff');
+  assert.deepEqual(bt.inserts[0].wam.state, { drive: 3 });
+  assert.equal(migrate({ tracks: [{ kind: 'plugin', clips: [] }] }).tracks[0].plugin, null);
+});
+
 test('alle effecten staan in een browsercategorie', () => {
   const listed = PLUGIN_CATS.flatMap(([, types]) => types);
-  assert.deepEqual([...listed].sort(), Object.keys(PLUGIN_DEFS).sort());
+  assert.deepEqual([...listed].sort(), Object.keys(PLUGIN_DEFS).filter((k) => !PLUGIN_DEFS[k].external).sort());
 });
 
 test('luidheid: sinus van 1 kHz op -20 dBFS is ongeveer -20 LUFS (per kanaal -23 + 3)', () => {

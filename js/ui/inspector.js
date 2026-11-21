@@ -3,7 +3,7 @@ import { state, commit, emit, select as selectTrack, selectedTrack } from '../st
 import { TRACK_COLORS } from '../model.js';
 import { PLUGIN_DEFS, PLUGIN_CATS, createInsert } from '../audio/plugin-defs.js';
 import { h, icon } from './dom.js';
-import { liveViews, effectDevice, synthDevice, drumsDevice, samplerDevice, audioDevice, masterDevice, returnDevice } from './devices.js';
+import { liveViews, effectDevice, synthDevice, drumsDevice, samplerDevice, audioDevice, masterDevice, returnDevice, pluginDevice } from './devices.js';
 
 export function createInspector(app) {
   const chain = h('div.chain');
@@ -62,6 +62,7 @@ export function createInspector(app) {
       box.classList.remove('drop');
       const data = JSON.parse(e.dataTransfer.getData('application/x-pulse') || 'null');
       if (data?.kind === 'fx') commit(() => inserts.push(createInsert(data.id)));
+      if (data?.kind === 'wam' && !data.instrument) app.addWamEffect(data, inserts);
     });
     box.dataset.chain = chainKey;
     return box;
@@ -80,12 +81,13 @@ export function createInspector(app) {
       : track.kind === 'synth' ? synthDevice(track, app)
         : track.kind === 'drums' ? drumsDevice(track, app)
           : track.kind === 'sampler' ? samplerDevice(track, app)
+            : track.kind === 'plugin' ? pluginDevice(track, app)
             : audioDevice(track, app);
     const items = [first];
     inserts.forEach((ins, i) => {
       items.push(h('div.chain-arrow', {}, icon('chevron', 14)));
       items.push(effectDevice(ins, {
-        chainKey, first: i === 0, last: i === inserts.length - 1,
+        chainKey, app, first: i === 0, last: i === inserts.length - 1,
         onRemove: () => commit(() => inserts.splice(i, 1)),
         onMove: (d) => commit(() => { inserts.splice(i, 1); inserts.splice(i + d, 0, ins); }),
       }));

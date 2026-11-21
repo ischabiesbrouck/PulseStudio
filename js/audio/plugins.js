@@ -78,6 +78,8 @@ function impulse(ctx, size, damping, type = 'zaal') {
   return buf;
 }
 
+import { createWam } from './wam.js';
+
 const hzOf = (bpm, beats) => bpm / 60 / beats;
 
 // ---------- AudioWorklet ----------
@@ -399,6 +401,27 @@ export const IMPL = {
     };
   },
 
+  // Externe plug-in (Web Audio Module). Tot hij geladen is (of als laden mislukt) gaat het geluid er onveranderd doorheen.
+  wam(ctx, ins) {
+    const input = gain(ctx), output = gain(ctx), dry = gain(ctx);
+    input.connect(dry).connect(output);
+    const fx = { input, output, url: ins.wam.url, inst: null, error: null, gui: null, disposed: false, update() {} };
+    fx.ready = createWam(ctx, ins.wam.url, ins.wam.state).then((inst) => {
+      if (fx.disposed) { try { inst.audioNode.destroy?.(); } catch { /* al weg */ } return; }
+      fx.inst = inst;
+      input.connect(inst.audioNode);
+      inst.audioNode.connect(output);
+      dry.disconnect();
+    }, (err) => { fx.error = err; console.warn(`Plug-in "${ins.wam.name}" kon niet laden`, err); });
+    fx.dispose = () => {
+      fx.disposed = true;
+      if (!fx.inst) return;
+      try { if (fx.gui) fx.inst.destroyGui?.(fx.gui); } catch { /* geen GUI */ }
+      try { fx.inst.audioNode.disconnect(); fx.inst.audioNode.destroy?.(); } catch { /* al weg */ }
+    };
+    return fx;
+  },
+
   maximizer: (ctx) => workletFx(ctx, 'ps-maximizer'),
   gate: (ctx) => workletFx(ctx, 'ps-gate'),
   transient: (ctx) => workletFx(ctx, 'ps-transient'),
@@ -483,7 +506,7 @@ export class Slot {
     this.output = gain(ctx);
     this.bypass = gain(ctx, 0);
     this.wet = gain(ctx);
-    this.fx = IMPL[ins.type](ctx);
+    this.fx = IMPL[ins.type](ctx, ins);
     this.input.connect(this.bypass).connect(this.output);
     this.input.connect(this.fx.input);
     this.fx.output.connect(this.wet).connect(this.output);

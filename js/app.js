@@ -23,6 +23,8 @@ import { analyseTempo, onWarpChange } from './audio/warp.js';
 import { splitClip, audioTimeRatio } from './model.js';
 import { zipFiles } from './wav.js';
 import { measure } from './audio/loudness.js';
+import { CATALOG_BASE, loadWamModule, isSafeUrl } from './audio/wam.js';
+import { createWamInsert } from './audio/plugin-defs.js';
 
 const buffers = new Map();
 const peaks = new Map();
@@ -221,6 +223,8 @@ async function saveNow() {
   clearTimeout(saveTimer);
   if (!state.project) return;
   try {
+    // Instellingen die in de interface van een plug-in zijn veranderd, gaan mee in het project.
+    await engine.collectWamStates(state.project).catch(() => {});
     await store.saveProject(state.project);
     await store.setMeta('last', state.project.id);
     ui.saved.textContent = 'Opgeslagen';
@@ -240,6 +244,7 @@ subscribe((scope) => {
     case 'loop': arrange.render(); updateTransport(); break;
     case 'transport': engine.sync(); updateTransport(); break;
     case 'panel': renderPanel(); break;
+    case 'plugin': break; // knoppen van een plug-in: de plug-in houdt zelf zijn waarde bij
     default: engine.sync(); renderAll();
   }
   if (!['select', 'view', 'panel'].includes(scope)) scheduleSave();
@@ -250,6 +255,15 @@ subscribe((scope) => {
 // Na slepen of draaien aan een clip: even wachten en dan pas de gerekte versies laten uitrekenen.
 let syncTimer = null;
 function syncSoon() { clearTimeout(syncTimer); syncTimer = setTimeout(() => engine.sync(), 350); }
+
+// Wat je in de eigen interface van een plug-in verandert, ziet PulseStudio niet; daarom regelmatig ophalen en zo nodig opslaan.
+setInterval(async () => {
+  const p = state.project;
+  if (!p || !engine.ctx) return;
+  const has = p.tracks.some((t) => t.kind === 'plugin' || t.inserts.some((i) => i.type === 'wam'))
+    || p.masterInserts.some((i) => i.type === 'wam') || (p.returns || []).some((r) => r.inserts.some((i) => i.type === 'wam'));
+  if (has && await engine.collectWamStates(p).catch(() => false)) scheduleSave();
+}, 8000);
 
 // Melding in de infobalk zolang er audio op tempo wordt gerekt.
 let warpWasBusy = false;
@@ -513,6 +527,7 @@ async function bounceTrack(trackId) {
   if (!track || !track.clips.length) { toast('Dit spoor heeft nog geen clips.'); return; }
   toast(`"${track.name}" wordt naar audio omgezet…`, 60000);
   try {
+    await engine.collectWamStates(p);
     const first = Math.min(...track.clips.map((c) => c.start));
     const end = Math.max(...track.clips.map((c) => c.start + c.length));
     const buf = await renderProject(p, buffers, { only: track.id, end, tail: 2, sampleRate: engine.ctx?.sampleRate || 44100 });
@@ -761,6 +776,25 @@ async function dropItem(data, { trackId = null, beat = null, useSelection = fals
     toast(`"${pat.name}" staat op maat ${Math.floor(at / BEATS_PER_BAR) + 1}. Je kunt de noten aanpassen in de editor.`, 3500);
     return;
   }
+  if (data.kind === 'wam') {
+    if (!data.url || !(data.trusted || await trustPlugin(data))) return;
+    if (data.instrument) {
+      const plugin = { url: data.url, name: data.name, vendor: data.vendor || '', state: null };
+      if (target?.kind === 'plugin') { commit(() => { target.plugin = plugin; }); select(target.id, null); }
+      else newTrack('plugin', data.name, (t) => { t.plugin = plugin; });
+      app.showPanel('sound');
+      toast(`${data.name} wordt geladen. Speel op je toetsenbord (A W S E D…) of teken noten in de editor.`, 4000);
+      return;
+    }
+    if (useSelection && state.view.inspectMaster) { addWamEffect(data, p.masterInserts); app.showMaster(); return; }
+    const ret = useSelection && (p.returns || []).find((r) => r.id === state.view.inspectReturn);
+    if (ret) { addWamEffect(data, ret.inserts); app.showReturn(ret.id); return; }
+    if (!target) { toast('Sleep een plug-in op een spoor, of in de keten in het Klank-paneel.'); return; }
+    addWamEffect(data, target.inserts);
+    select(target.id, null);
+    app.showPanel('sound');
+    return;
+  }
   if (data.kind === 'fx') {
     if (useSelection && state.view.inspectMaster) { commit(() => p.masterInserts.push(createInsert(data.id))); app.showMaster(); return; }
     const ret = useSelection && (p.returns || []).find((r) => r.id === state.view.inspectReturn);
@@ -772,6 +806,44 @@ async function dropItem(data, { trackId = null, beat = null, useSelection = fals
     toast(`${PLUGIN_DEFS[data.id].name} toegevoegd aan "${target.name}".`);
   }
 }
+
+// ---------- Plug-ins (Web Audio Modules) ----------
+
+// Een plug-in is code van een andere maker die in PulseStudio draait. Eén keer uitleggen voor de catalogus;
+// voor een eigen adres altijd vragen.
+async function trustPlugin(data) {
+  let ok = false;
+  try { ok = localStorage.getItem('pulsestudio.wamOk') === '1'; } catch { ok = false; }
+  const fromCatalog = data.url.startsWith(CATALOG_BASE);
+  if (ok && fromCatalog) return true;
+  const msg = fromCatalog
+    ? `"${data.name}" is een plug-in van ${data.vendor || 'een andere maker'} uit de WAM-community-catalogus. Plug-ins zijn programma's van andere makers die binnen PulseStudio draaien en worden van internet geladen. Doorgaan?`
+    : `Plug-in laden van ${new URL(data.url).host}?\n\nEen plug-in is een programma dat binnen PulseStudio draait en bij je projecten kan. Laad alleen plug-ins van makers die je vertrouwt.`;
+  if (!confirm(msg)) return false;
+  if (fromCatalog) { try { localStorage.setItem('pulsestudio.wamOk', '1'); } catch { /* geen opslag */ } }
+  return true;
+}
+
+function addWamEffect(data, inserts) {
+  commit(() => inserts.push(createWamInsert(data)));
+  toast(`${data.name} wordt geladen…`, 2500);
+}
+app.addWamEffect = (data, inserts) => { trustPlugin(data).then((ok) => { if (ok) addWamEffect(data, inserts); }); };
+
+async function loadWamFromUrl() {
+  const url = (prompt('Adres van de plug-in (het index.js-bestand van een WAM 2.0-plug-in):', 'https://') || '').trim();
+  if (!url || url === 'https://') return;
+  if (!isSafeUrl(url)) { toast('Gebruik een https-adres.', 3500); return; }
+  const name = decodeURIComponent(url.split('/').slice(-2, -1)[0] || 'Plug-in');
+  const data = { kind: 'wam', url, name, vendor: new URL(url).host };
+  // Eerst toestemming, dan pas de code laden.
+  if (!(await trustPlugin(data))) return;
+  toast('Plug-in controleren…', 10000);
+  try { await loadWamModule(url); } catch (err) { toast(`Dit is geen bruikbare plug-in: ${err.message}`, 5000); return; }
+  data.instrument = confirm(`Is "${name}" een instrument (speelt noten)?\n\nOK = instrument op een eigen spoor, Annuleren = effect op het geselecteerde spoor.`);
+  dropItem({ ...data, trusted: true }, { useSelection: true });
+}
+app.loadWamFromUrl = loadWamFromUrl;
 
 // ---------- Exporteren ----------
 
@@ -809,6 +881,7 @@ async function runExport() {
   const safe = p.name.replace(/[\\/:*?"<>|]+/g, '').trim() || 'PulseStudio';
   const { bits, rate } = exportOpts;
   try {
+    await engine.collectWamStates(p);
     if (exportOpts.what === 'stems') {
       const end = projectEnd(p);
       const files = [];
@@ -916,12 +989,17 @@ function showHelp() {
     h('h3.credits-title', {}, 'Opnames'),
     h('p.hint', {}, 'PulseStudio gebruikt vrij te gebruiken opnames. Ze worden geladen zodra je ze nodig hebt en daarna in deze browser bewaard, zodat ze ook offline werken.'),
     h('ul.credits', {}, CREDITS.map((c) => h('li', {},
-      h('strong', {}, c.name), ` door ${c.by}, `, h('a', { href: c.url, target: '_blank', rel: 'noopener' }, c.license), `. Gebruikt voor: ${c.use}.`))));
+      h('strong', {}, c.name), ` door ${c.by}, `, h('a', { href: c.url, target: '_blank', rel: 'noopener' }, c.license), `. Gebruikt voor: ${c.use}.`))),
+    h('h3.credits-title', {}, 'Plug-ins'),
+    h('p.hint', {}, 'Onder Plug-ins in de browser staan Web Audio Modules (WAM 2.0) uit de ',
+      h('a', { href: 'https://www.webaudiomodules.com/community/', target: '_blank', rel: 'noopener' }, 'WAM-community-catalogus'),
+      '. Elke plug-in heeft zijn eigen maker en licentie en wordt van internet geladen. PulseStudio gebruikt het host-deel van de WAM-SDK (MIT-licentie).'));
 }
 
 // ---------- Start ----------
 
-const resume = () => engine.ensure().catch(() => {});
+// Na de eerste klik of toets start de audio; dan kunnen ook de interfaces van plug-ins getoond worden.
+const resume = () => engine.ensure().then(() => { if (state.view.panel === 'sound') renderPanel(); }).catch(() => {});
 window.addEventListener('pointerdown', resume, { once: true, capture: true });
 window.addEventListener('keydown', resume, { once: true, capture: true });
 window.addEventListener('pagehide', () => saveNow());

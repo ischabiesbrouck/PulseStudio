@@ -9,7 +9,7 @@ const SCALE = [6, 0, -6, -12, -24, -36, -60];
 const frac = (db) => clamp((db + 60) / 66, 0, 1);
 const dbText = (v) => (v <= -60 ? '-∞' : `${v > 0 ? '+' : ''}${v.toFixed(1)}`);
 const panText = (v) => (Math.abs(v) < 0.01 ? 'C' : v < 0 ? `L${Math.round(-v * 100)}` : `R${Math.round(v * 100)}`);
-const KIND_TAG = { synth: 'Synth', drums: 'Drums', sampler: 'Sampler', audio: 'Audio' };
+const KIND_TAG = { synth: 'Synth', drums: 'Drums', sampler: 'Sampler', audio: 'Audio', plugin: 'Plug-in' };
 
 export function createMixer(app) {
   const root = h('div.mixer');
@@ -41,7 +41,8 @@ export function createMixer(app) {
   }
 
   function insertList(inserts, open) {
-    const shown = inserts.slice(0, 5).map((ins) => h('button.ins', { class: ins.on ? 'on' : null, onclick: open, title: `${PLUGIN_DEFS[ins.type].name} (klik om te openen)` }, h('i'), PLUGIN_DEFS[ins.type].name));
+    const nameOf = (ins) => (ins.type === 'wam' ? ins.wam.name : PLUGIN_DEFS[ins.type].name);
+    const shown = inserts.slice(0, 5).map((ins) => h('button.ins', { class: ins.on ? 'on' : null, onclick: open, title: `${nameOf(ins)} (klik om te openen)` }, h('i'), nameOf(ins)));
     if (inserts.length > 5) shown.push(h('button.ins.empty', { onclick: open }, `+${inserts.length - 5} meer`));
     if (!inserts.length) shown.push(h('button.ins.empty', { onclick: open }, '+ effect'));
     return h('div.inserts', {}, shown);

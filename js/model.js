@@ -104,7 +104,8 @@ export const defaultSampler = (instrument = null) => ({
   attack: 0.003, decay: 0.5, sustain: 1, release: instrument ? 0.5 : 0.3, cutoff: 18000, gain: 0.8,
 });
 
-export const KIND_NAMES = { synth: 'Synth', drums: 'Drums', sampler: 'Sampler', audio: 'Audio' };
+// 'plugin': een instrument-plug-in (Web Audio Module) die MIDI-noten krijgt; `track.plugin` = { url, name, vendor, state }.
+export const KIND_NAMES = { synth: 'Synth', drums: 'Drums', sampler: 'Sampler', audio: 'Audio', plugin: 'Plug-in' };
 
 export function createTrack(kind, index = 0, name) {
   const t = {
@@ -124,6 +125,7 @@ export function createTrack(kind, index = 0, name) {
   if (kind === 'synth') t.synth = defaultSynth();
   if (kind === 'drums') t.drums = defaultDrums();
   if (kind === 'sampler') t.sampler = defaultSampler();
+  if (kind === 'plugin') t.plugin = null;
   return t;
 }
 
@@ -343,6 +345,7 @@ export function migrate(project) {
     if (t.kind === 'synth') track.synth = { ...defaultSynth(t.synth?.preset), ...t.synth };
     if (t.kind === 'drums') track.drums = { ...defaultDrums(), ...t.drums, pads: { ...t.drums?.pads } };
     if (t.kind === 'sampler') track.sampler = { ...defaultSampler(), ...t.sampler };
+    if (t.kind === 'plugin') track.plugin = t.plugin?.url ? { name: 'Plug-in', vendor: '', state: null, ...t.plugin } : null;
     track.clips = (t.clips || []).map((c) => ({ ...createClip(t.kind, 0), ...c }));
     return track;
   });

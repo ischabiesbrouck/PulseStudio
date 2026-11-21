@@ -398,9 +398,84 @@ const col = (label, ...children) => h('div.dev-col', {}, label ? h('span.dev-sec
 const knobGrid = (cols, knobs) => h('div.knobs', { style: { '--cols': cols } }, knobs);
 const fieldSm = (label, control) => h('label.field-sm', {}, h('span', {}, label), control);
 
+// ---------- Externe plug-ins (Web Audio Modules) ----------
+
+// Toont de eigen interface van de plug-in; heeft hij die niet, dan draaiknoppen voor zijn parameters.
+function wamView(app, chainKey, insId) {
+  const mount = h('div.wam-gui', {}, h('p.hint', {}, 'Plug-in laden…'));
+  const fail = (msg) => mount.replaceChildren(h('p.hint.wam-err', {}, msg));
+  const show = async () => {
+    const holder = app.engine.wam(chainKey, insId);
+    if (!holder) { fail('Deze plug-in is nog niet geladen.'); return; }
+    await holder.ready;
+    if (holder.error || !holder.inst) { fail(`Laden mislukt: ${holder.error?.message || 'onbekende fout'}. Controleer de internetverbinding of het adres; tot dan gaat het geluid er onveranderd doorheen.`); return; }
+    if (holder.gui === null && !holder.guiTried) {
+      holder.guiTried = true;
+      try { holder.gui = (await holder.inst.createGui()) || null; } catch (err) { holder.gui = null; console.warn('Geen GUI', err); }
+    }
+    if (holder.gui) { mount.replaceChildren(holder.gui); return; }
+    // Geen eigen interface: parameters als draaiknoppen.
+    let info = {};
+    try { info = await holder.inst.audioNode.getParameterInfo(); } catch { info = {}; }
+    let values = {};
+    try { values = await holder.inst.audioNode.getParameterValues(); } catch { values = {}; }
+    const list = Object.values(info).slice(0, 32);
+    if (!list.length) { fail('Deze plug-in heeft geen eigen bedieningspaneel en geen parameters.'); return; }
+    mount.replaceChildren(knobGrid(Math.min(8, list.length), list.map((p) => {
+      const key = p.id;
+      let v = values[key]?.value ?? p.defaultValue ?? p.minValue;
+      return knob({
+        label: p.label || key, min: p.minValue, max: p.maxValue, step: p.type === 'int' || p.type === 'boolean' || p.type === 'choice' ? 1 : (p.maxValue - p.minValue) / 1000,
+        def: p.defaultValue, small: true, size: 40, scope: 'plugin',
+        get: () => v,
+        set: (x) => { v = x; holder.inst.audioNode.setParameterValues({ [key]: { id: key, value: x, normalized: false } }); },
+        format: (x) => { try { return p.valueString ? p.valueString(x) : (Math.abs(x) >= 10 ? x.toFixed(0) : x.toFixed(2)); } catch { return x.toFixed(2); } },
+      });
+    })));
+  };
+  if (app.engine.ctx) show();
+  else {
+    mount.replaceChildren(h('button.btn.small', { title: 'Start de audio en toon de plug-ins', onclick: async () => { await app.ensureAudio(); app.emit('panel'); } }, 'Plug-in openen'));
+  }
+  return mount;
+}
+
+const wamBadge = (meta) => h('span.wam-badge', { title: meta.url }, meta.vendor ? `WAM · ${meta.vendor}` : 'WAM');
+
+function wamEffectDevice(ins, { chainKey, onRemove, onMove, first, last, app }) {
+  const tools = [
+    h('button.tbtn.ic', { disabled: first, onclick: () => onMove(-1), 'aria-label': 'Naar links', title: 'Naar links in de keten' }, icon('chevronLeft', 14)),
+    h('button.tbtn.ic', { disabled: last, onclick: () => onMove(1), 'aria-label': 'Naar rechts', title: 'Naar rechts in de keten' }, icon('chevron', 14)),
+    h('button.tbtn.ic', { onclick: onRemove, 'aria-label': `${ins.wam.name} verwijderen`, title: 'Verwijderen' }, icon('close', 13)),
+  ];
+  return frame({
+    title: ins.wam.name, info: `Plug-in van ${ins.wam.vendor || 'een andere maker'} (Web Audio Module). De instellingen worden met het project bewaard.`,
+    on: ins.on, tools, lead: [wamBadge(ins.wam)], cls: 'wam',
+    onPower: (on) => commit(() => { ins.on = on; }, 'params'),
+    body: [wamView(app, chainKey, ins.id)],
+  });
+}
+
+// Instrumentspoor met een plug-in.
+export function pluginDevice(track, app) {
+  const pl = track.plugin;
+  if (!pl) {
+    return frame({ title: 'Plug-in-instrument', cls: 'instrument', info: 'Kies een instrument-plug-in (Web Audio Module)',
+      body: [col('Instrument', h('p.hint', { style: { maxWidth: '260px' } }, 'Dit spoor speelt een instrument-plug-in. Kies er een in de browser onder Plug-ins, of laad er een via een adres.'),
+        h('div', { style: { display: 'flex', gap: '6px' } }, h('button.btn.small', { onclick: () => app.openBrowser('plugins', 'Instrumenten') }, 'Plug-ins bekijken')))] });
+  }
+  return frame({
+    title: pl.name, cls: 'instrument wam', info: `Instrument-plug-in van ${pl.vendor || 'een andere maker'} (Web Audio Module). Speel op het toetsenbord of teken noten in de editor.`,
+    lead: [wamBadge(pl), h('button.btn.small', { onclick: () => app.audition(track, 60, 0.85) }, icon('play', 12), 'Luister')],
+    tools: [h('button.tbtn', { title: 'Ander instrument kiezen', onclick: () => app.openBrowser('plugins', 'Instrumenten') }, 'Wisselen')],
+    body: [wamView(app, track.id, null)],
+  });
+}
+
 // ---------- Effect ----------
 
-export function effectDevice(ins, { chainKey, onRemove, onMove, first, last }) {
+export function effectDevice(ins, { chainKey, onRemove, onMove, first, last, app }) {
+  if (ins.type === 'wam') return wamEffectDevice(ins, { chainKey, onRemove, onMove, first, last, app });
   const def = PLUGIN_DEFS[ins.type];
   const viz = VIZ[ins.type];
   const knobs = [];

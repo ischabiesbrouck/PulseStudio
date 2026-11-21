@@ -4,7 +4,7 @@ import { BEATS_PER_BAR, projectEnd, patternOf, createClip, createTrack, snap, sn
 import { h, icon, param, select as selectEl } from './dom.js';
 
 export const HEADER_W = 224;
-const KIND_TAG = { synth: 'Synth', drums: 'Drums', sampler: 'Sampler', audio: 'Audio' };
+const KIND_TAG = { synth: 'Synth', drums: 'Drums', sampler: 'Sampler', audio: 'Audio', plugin: 'Plug-in' };
 const SNAPS = [[4, 'Maat'], [1, 'Tel'], [0.5, '1/8'], [0.25, '1/16']];
 const PULSE = 'application/x-pulse';
 
@@ -354,7 +354,7 @@ export function createArrange(app) {
       },
     }, icon('plus', 13), label);
     const lane = h('div.lane.empty');
-    const row = h('div.arr-row.add-row', {}, h('div.arr-header.add', {}, add('synth', 'Synth'), add('drums', 'Drums'), add('sampler', 'Sampler'), add('audio', 'Audio')), lane);
+    const row = h('div.arr-row.add-row', {}, h('div.arr-header.add', {}, add('synth', 'Synth'), add('drums', 'Drums'), add('sampler', 'Sampler'), add('audio', 'Audio'), add('plugin', 'Plug-in')), lane);
     row.addEventListener('dragover', (e) => { if (e.dataTransfer.types.includes(PULSE) || e.dataTransfer.types.includes('Files')) { e.preventDefault(); lane.classList.add('drop'); } });
     row.addEventListener('dragleave', () => lane.classList.remove('drop'));
     row.addEventListener('drop', (e) => {

@@ -1,6 +1,7 @@
 // Signaalketen per spoor (en voor de master): ingang → inserts → pan → fader → meter.
 import { dbToGain } from '../model.js';
 import { Slot } from './plugins.js';
+import { createWam } from './wam.js';
 
 export function readPeak(analyser, scratch) {
   analyser.getFloatTimeDomainData(scratch);
@@ -87,6 +88,35 @@ export class TrackChain {
     }
   }
 
+  // Instrument-plug-in (WAM) voor een 'plugin'-spoor: { url, state } of null.
+  setInstrument(plugin) {
+    if (this.instrument && (!plugin || this.instrument.url !== plugin.url)) {
+      const old = this.instrument;
+      this.instrument = null;
+      old.dispose();
+    }
+    if (!plugin?.url || this.instrument) return this.instrument?.ready;
+    const holder = { url: plugin.url, inst: null, error: null, gui: null, disposed: false };
+    holder.dispose = () => {
+      holder.disposed = true;
+      if (!holder.inst) return;
+      try { if (holder.gui) holder.inst.destroyGui?.(holder.gui); } catch { /* geen GUI */ }
+      try { holder.inst.audioNode.disconnect(); holder.inst.audioNode.destroy?.(); } catch { /* al weg */ }
+    };
+    holder.ready = createWam(this.ctx, plugin.url, plugin.state).then((inst) => {
+      if (holder.disposed) { try { inst.audioNode.destroy?.(); } catch { /* al weg */ } return; }
+      holder.inst = inst;
+      inst.audioNode.connect(this.input);
+    }, (err) => { holder.error = err; console.warn('Instrument-plug-in kon niet laden', err); });
+    this.instrument = holder;
+    return holder.ready;
+  }
+
+  // Wacht tot alle plug-ins in deze keten geladen zijn (nodig voor offline renderen).
+  ready() {
+    return Promise.all([this.instrument?.ready, ...this.slots.map((s) => s.fx.ready)].filter(Boolean));
+  }
+
   schedule(from, to, time, spb) {
     for (const s of this.slots) if (s.ins.on && s.fx.schedule) s.fx.schedule(from, to, time, spb, s.ins.params);
   }
@@ -97,6 +127,7 @@ export class TrackChain {
 
   dispose() {
     for (const s of this.slots) s.dispose();
+    this.instrument?.dispose();
     try { this.fader.disconnect(); this.input.disconnect(); } catch { /* al losgekoppeld */ }
   }
 }

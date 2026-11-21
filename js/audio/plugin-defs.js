@@ -87,7 +87,65 @@ export const PLUGIN_DEFS = {
     name: 'Limiter', info: 'Harde grens, zodat niets boven het plafond uitkomt.',
     params: { gain: db('Versterking', 0, 0, 18), ceiling: db('Plafond', -1, -12, 0) },
   },
+
+  // ---------- Studio-effecten (AudioWorklet) en vrije klassiekers ----------
+  maximizer: {
+    name: 'Maximizer', info: 'Limiter die 1,5 ms vooruitkijkt: luider zonder hoorbare vervorming of overschrijding van het plafond.',
+    params: { gain: db('Versterking', 3, 0, 18), ceiling: { ...db('Plafond', -0.3, -6, 0), step: 0.1 }, release: sec('Release', 0.08, 0.005, 1) },
+  },
+  multiband: {
+    name: 'Multiband', info: 'Driebandcompressor: laag, midden en hoog elk apart in toom houden, met Linkwitz-Riley-wissels.',
+    params: {
+      lowX: hz('Wissel laag', 200, 60, 800), highX: hz('Wissel hoog', 3000, 1000, 10000),
+      threshold: db('Drempel', -20, -50, 0), ratio: { label: 'Ratio', def: 3, min: 1, max: 12, step: 0.1, unit: ':1', curve: 'exp' },
+      attack: sec('Attack', 0.01, 0.001, 0.2), release: sec('Release', 0.15, 0.03, 1),
+      low: db('Laag', 0, -12, 12), mid: db('Midden', 0, -12, 12), high: db('Hoog', 0, -12, 12),
+    },
+  },
+  gate: {
+    name: 'Gate', info: 'Sluit het geluid af onder de drempel: ruis, brom en overspraak eruit.',
+    params: { threshold: db('Drempel', -40, -80, 0), range: db('Diepte', 60, 6, 80), attack: sec('Attack', 0.001, 0.0001, 0.05), hold: sec('Hold', 0.04, 0.001, 0.5), release: sec('Release', 0.12, 0.01, 1.5) },
+  },
+  transient: {
+    name: 'Transiëntvormer', info: 'Maakt de aanslag harder of zachter, los van de staart. Werkt zonder drempel.',
+    params: { attack: pct('Aanslag', 0, -1, 1), sustain: pct('Staart', 0, -1, 1), output: db('Uitgang', 0, -12, 12) },
+  },
+  deesser: {
+    name: 'De-esser', info: 'Tempert scherpe s- en t-klanken door alleen de hoogte te comprimeren.',
+    params: { freq: hz('Frequentie', 6500, 2000, 12000), threshold: db('Drempel', -26, -60, 0), range: db('Maximaal', 8, 1, 18) },
+  },
+  tape: {
+    name: 'Tape', info: 'Bandmachine: verzadiging, kop-bump in het laag, gedempte hoogte, wow en flutter.',
+    params: { drive: db('Drive', 6, 0, 24), bump: db('Kop-bump', 2, 0, 6), tone: hz('Hoogte', 14000, 3000, 20000), wow: pct('Wow', 0.2), flutter: pct('Flutter', 0.2), mix: pct('Hoeveelheid', 1) },
+  },
+  ensemble: {
+    name: 'Ensemble', info: 'BBD-chorus in de stijl van klassieke polysynths uit de jaren tachtig, met de standen I, II en I+II.',
+    params: { mode: { label: 'Stand', def: 1, type: 'select', options: [[1, 'I'], [2, 'II'], [3, 'I+II']] }, width: pct('Breedte', 1), mix: pct('Hoeveelheid', 0.5) },
+  },
+  freeverb: {
+    name: 'Freeverb', info: 'De klassieke vrije galm van Jezar (Dreampoint, 2000, publiek domein): acht kamfilters en vier allpassfilters per kanaal.',
+    credit: 'Algoritme van Jezar at Dreampoint, publiek domein',
+    params: { room: pct('Ruimte', 0.78), damp: pct('Demping', 0.45), width: pct('Breedte', 1), predelay: sec('Predelay', 0.01, 0, 0.2, null), mix: pct('Hoeveelheid', 0.3) },
+  },
+  plate: {
+    name: 'Plaatgalm 97', info: 'Plaatgalm naar het ontwerp van Jon Dattorro (1997): dicht, glad en helder, met bewegende staart.',
+    credit: 'Naar J. Dattorro, "Effect Design Part 1", JAES 1997',
+    params: {
+      decay: pct('Galmtijd', 0.65, 0.05, 0.98), predelay: sec('Predelay', 0.01, 0, 0.25, null),
+      tone: hz('Toon', 11000, 1000, 18000), damping: hz('Demping', 7000, 800, 16000), mod: pct('Beweging', 0.5), mix: pct('Hoeveelheid', 0.3),
+    },
+  },
 };
+
+// Indeling in de browser.
+export const PLUGIN_CATS = [
+  ['Dynamiek', ['comp', 'multiband', 'limiter', 'maximizer', 'gate', 'transient', 'deesser']],
+  ['EQ en filter', ['eq', 'autofilter']],
+  ['Kleur', ['sat', 'tape', 'lofi']],
+  ['Modulatie', ['chorus', 'ensemble', 'phaser', 'tremolo', 'width']],
+  ['Ruimte en tijd', ['plate', 'freeverb', 'reverb', 'delay']],
+  ['Ritme', ['pump']],
+];
 
 // Kant-en-klare instellingen per effect, als startpunt.
 export const PLUGIN_PRESETS = {
@@ -138,6 +196,35 @@ export const PLUGIN_PRESETS = {
   pump: { 'Klassiek': { amount: 0.7, rate: 1, release: 0.6 }, 'Zacht': { amount: 0.4, rate: 1, release: 0.8 }, 'Achtsten': { amount: 0.5, rate: 0.5, release: 0.7 } },
   width: { 'Mono': { width: 0 }, 'Breed': { width: 1.5 }, 'Extra breed': { width: 1.9 } },
   limiter: { 'Transparant': { gain: 0, ceiling: -1 }, 'Luid': { gain: 6, ceiling: -0.5 }, 'Streaming': { gain: 2, ceiling: -1 } },
+  maximizer: {
+    'Streaming (-14 LUFS)': { gain: 2, ceiling: -1, release: 0.12 },
+    'Club': { gain: 6, ceiling: -0.3, release: 0.06 },
+    'Maximaal': { gain: 10, ceiling: -0.1, release: 0.03 },
+  },
+  multiband: {
+    'Mixbus-lijm': { lowX: 180, highX: 3500, threshold: -18, ratio: 2, attack: 0.02, release: 0.2, low: 0.5, mid: 0, high: 0.5 },
+    'Laag strak': { lowX: 140, highX: 4000, threshold: -24, ratio: 5, attack: 0.008, release: 0.12, low: 2, mid: 0, high: 0 },
+    'Plat en dik': { lowX: 220, highX: 2800, threshold: -34, ratio: 8, attack: 0.003, release: 0.08, low: 4, mid: 3, high: 4 },
+  },
+  gate: { 'Drums strak': { threshold: -30, range: 40, attack: 0.0005, hold: 0.03, release: 0.08 }, 'Zang': { threshold: -48, range: 18, attack: 0.002, hold: 0.08, release: 0.25 } },
+  transient: { 'Meer punch': { attack: 0.6, sustain: -0.2, output: -1 }, 'Kamer eruit': { attack: 0.1, sustain: -0.8, output: 1 }, 'Zacht en vol': { attack: -0.6, sustain: 0.5, output: -1 } },
+  deesser: { 'Zang': { freq: 6500, threshold: -28, range: 8 }, 'Hoge stem': { freq: 8500, threshold: -30, range: 10 }, 'Hihats temmen': { freq: 9500, threshold: -24, range: 6 } },
+  tape: {
+    'Warm en rond': { drive: 6, bump: 2.5, tone: 13000, wow: 0.15, flutter: 0.1, mix: 1 },
+    'Cassette': { drive: 10, bump: 1, tone: 7000, wow: 0.55, flutter: 0.5, mix: 1 },
+    'Kapotte band': { drive: 16, bump: 3, tone: 5000, wow: 1, flutter: 0.9, mix: 1 },
+  },
+  ensemble: { 'Breed (I)': { mode: 1, width: 1, mix: 0.5 }, 'Dik (II)': { mode: 2, width: 1, mix: 0.55 }, 'Vibrato (I+II)': { mode: 3, width: 0.8, mix: 0.5 } },
+  freeverb: {
+    'Kleine kamer': { room: 0.45, damp: 0.6, width: 0.8, predelay: 0.004, mix: 0.2 },
+    'Hal': { room: 0.82, damp: 0.4, width: 1, predelay: 0.02, mix: 0.3 },
+    'Oneindig': { room: 0.98, damp: 0.25, width: 1, predelay: 0.04, mix: 0.45 },
+  },
+  plate: {
+    'Zangplaat': { decay: 0.6, predelay: 0.02, tone: 12000, damping: 8000, mod: 0.4, mix: 0.25 },
+    'Snareplaat': { decay: 0.45, predelay: 0.005, tone: 14000, damping: 9000, mod: 0.3, mix: 0.3 },
+    'Donker en lang': { decay: 0.88, predelay: 0.03, tone: 6000, damping: 3500, mod: 0.7, mix: 0.35 },
+  },
 };
 
 let n = 0;

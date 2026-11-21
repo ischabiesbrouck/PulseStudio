@@ -57,13 +57,34 @@ export class TrackChain {
     inserts.forEach((ins, i) => this.slots[i].update(ins, bpm, set));
   }
 
-  // `track` mag ook een master-object zijn: { inserts, pan, volume }.
-  update(track, bpm, audible, immediate = false) {
+  // `track` mag ook een master- of return-object zijn: { inserts, pan, volume }.
+  // `returns`: Map van return-id naar keten; sends gaan na de fader (post-fader) naar die ketens.
+  update(track, bpm, audible, immediate = false, returns = null) {
     const t = this.ctx.currentTime;
     const set = immediate ? (param, v) => { param.value = v; } : (param, v) => param.setTargetAtTime(v, t, 0.015);
     this.setInserts(track.inserts || [], bpm, set);
     set(this.panner.pan, track.pan || 0);
     set(this.fader.gain, audible ? dbToGain(track.volume) : 0);
+    if (returns) this.setSends(track.sends || {}, returns, set);
+  }
+
+  setSends(sends, returns, set) {
+    this.sends ||= new Map();
+    for (const [id, node] of this.sends) {
+      if (!returns.has(id) || node.dest !== returns.get(id)) { try { node.g.disconnect(); } catch { /* al los */ } this.sends.delete(id); }
+    }
+    for (const [id, chain] of returns) {
+      let node = this.sends.get(id);
+      const v = sends[id] ?? -60;
+      if (!node) {
+        if (v <= -60) continue;
+        const g = this.ctx.createGain();
+        g.gain.value = 0;
+        this.fader.connect(g).connect(chain.input);
+        this.sends.set(id, (node = { g, dest: chain }));
+      }
+      set(node.g.gain, dbToGain(v));
+    }
   }
 
   schedule(from, to, time, spb) {

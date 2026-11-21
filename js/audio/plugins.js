@@ -80,6 +80,52 @@ function impulse(ctx, size, damping, type = 'zaal') {
 
 const hzOf = (bpm, beats) => bpm / 60 / beats;
 
+// ---------- AudioWorklet ----------
+
+const WORKLET_URL = new URL('./worklets.js', import.meta.url).href;
+const loaded = new WeakMap();
+const workletOk = new WeakSet();
+// Laadt de processors in een (offline) context; zonder AudioWorklet vallen die effecten terug op doorlussen.
+export function loadWorklets(ctx) {
+  if (!loaded.has(ctx)) {
+    loaded.set(ctx, ctx.audioWorklet
+      ? ctx.audioWorklet.addModule(WORKLET_URL).then(() => { workletOk.add(ctx); return true; }, (err) => { console.warn('AudioWorklet niet beschikbaar', err); return false; })
+      : Promise.resolve(false));
+  }
+  return loaded.get(ctx);
+}
+export const hasWorklets = (ctx) => workletOk.has(ctx);
+
+// Effect rond één AudioWorkletNode; de parameters heten hetzelfde als in plugin-defs.js.
+function workletFx(ctx, name, extra = {}) {
+  if (!workletOk.has(ctx)) {
+    const g = gain(ctx);
+    return { input: g, output: g, update() {}, fallback: true };
+  }
+  const node = new AudioWorkletNode(ctx, name, { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit', channelInterpretation: 'speakers' });
+  let gr = 0;
+  node.port.onmessage = (e) => { gr = e.data; };
+  return {
+    input: node, output: node,
+    reduction: () => -gr,
+    update(p, bpm, set) {
+      for (const [k, v] of Object.entries(p)) { const ap = node.parameters.get(k); if (ap && typeof v === 'number') set(ap, v); }
+      extra.update?.(p, set);
+    },
+    dispose() { node.port.postMessage('stop'); },
+  };
+}
+
+// Linkwitz-Riley-wissel (4e orde): twee keer een Butterworth van de 2e orde.
+function lr4(ctx, type) {
+  const a = biquad(ctx, type, 1000, Math.SQRT1_2), b = biquad(ctx, type, 1000, Math.SQRT1_2);
+  a.connect(b);
+  return { input: a, output: b, freq: (set, f) => { set(a.frequency, f); set(b.frequency, f); } };
+}
+
+// BBD-chorus: snelheden en dieptes zoals bij de bekende polysynth-chorus (stand I, II en beide).
+const ENSEMBLE = { 1: { rate: 0.513, depth: 0.00185 }, 2: { rate: 0.863, depth: 0.00185 }, 3: { rate: 9.75, depth: 0.00032 } };
+
 export const IMPL = {
   eq(ctx) {
     const hp = biquad(ctx, 'highpass', 20);
@@ -350,6 +396,79 @@ export const IMPL = {
           last = p.ceiling;
         }
       },
+    };
+  },
+
+  maximizer: (ctx) => workletFx(ctx, 'ps-maximizer'),
+  gate: (ctx) => workletFx(ctx, 'ps-gate'),
+  transient: (ctx) => workletFx(ctx, 'ps-transient'),
+  deesser: (ctx) => workletFx(ctx, 'ps-deesser'),
+  tape: (ctx) => workletFx(ctx, 'ps-tape'),
+  freeverb: (ctx) => workletFx(ctx, 'ps-freeverb'),
+  plate: (ctx) => workletFx(ctx, 'ps-plate'),
+
+  multiband(ctx) {
+    const input = gain(ctx), output = gain(ctx);
+    const lowLp = lr4(ctx, 'lowpass'), lowHp = lr4(ctx, 'highpass');
+    const midLp = lr4(ctx, 'lowpass'), highHp = lr4(ctx, 'highpass');
+    const align = biquad(ctx, 'allpass', 3000, Math.SQRT1_2); // fase van het laag gelijk trekken met midden + hoog
+    input.connect(lowLp.input);
+    input.connect(lowHp.input);
+    lowLp.output.connect(align);
+    lowHp.output.connect(midLp.input);
+    lowHp.output.connect(highHp.input);
+    const bands = [align, midLp.output, highHp.output].map((src) => {
+      const c = ctx.createDynamicsCompressor();
+      c.knee.value = 8;
+      const g = gain(ctx);
+      src.connect(c).connect(g).connect(output);
+      return { c, g };
+    });
+    return {
+      input, output,
+      reduction: () => Math.min(...bands.map((b) => b.c.reduction)),
+      bands: () => bands.map((b) => b.c.reduction),
+      update(p, bpm, set) {
+        lowLp.freq(set, p.lowX); lowHp.freq(set, p.lowX);
+        const hx = Math.max(p.highX, p.lowX * 1.5);
+        midLp.freq(set, hx); highHp.freq(set, hx); set(align.frequency, hx);
+        bands.forEach((b, i) => {
+          set(b.c.threshold, p.threshold); set(b.c.ratio, p.ratio); set(b.c.attack, p.attack * (i === 0 ? 1.6 : i === 2 ? 0.6 : 1)); set(b.c.release, p.release * (i === 0 ? 1.4 : 1));
+          set(b.g.gain, dbToGain([p.low, p.mid, p.high][i]));
+        });
+      },
+    };
+  },
+
+  ensemble(ctx) {
+    const w = wetDry(ctx);
+    const dl = ctx.createDelay(0.05), dr = ctx.createDelay(0.05);
+    dl.delayTime.value = dr.delayTime.value = 0.0035;
+    const mod = lfo(ctx, 'triangle');
+    const ml = gain(ctx), mr = gain(ctx);
+    mod.connect(ml).connect(dl.delayTime);
+    mod.connect(mr).connect(dr.delayTime);
+    // Het BBD-geluid: wat gedempte hoogte en een klein beetje ruis zou erbij horen; de hoogte nemen we mee.
+    const tl = biquad(ctx, 'lowpass', 9000, 0.5), tr = biquad(ctx, 'lowpass', 9000, 0.5);
+    const merge = ctx.createChannelMerger(2);
+    const mono = gain(ctx);
+    mono.channelCount = 1; mono.channelCountMode = 'explicit';
+    w.input.connect(mono);
+    mono.connect(dl).connect(tl).connect(merge, 0, 0);
+    mono.connect(dr).connect(tr).connect(merge, 0, 1);
+    const width = IMPL.width(ctx);
+    merge.connect(width.input);
+    width.output.connect(w.wet);
+    return {
+      input: w.input, output: w.output,
+      update(p, bpm, set) {
+        const m = ENSEMBLE[p.mode] || ENSEMBLE[1];
+        set(mod.frequency, m.rate);
+        set(ml.gain, m.depth); set(mr.gain, -m.depth);
+        width.update({ width: p.width }, bpm, set);
+        w.mix(set, p.mix);
+      },
+      dispose() { mod.stop(); },
     };
   },
 };

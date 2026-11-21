@@ -118,6 +118,7 @@ export function createTrack(kind, index = 0, name) {
     solo: false,
     arm: false,
     inserts: [],
+    sends: {},
     clips: [],
   };
   if (kind === 'synth') t.synth = defaultSynth();
@@ -126,14 +127,105 @@ export function createTrack(kind, index = 0, name) {
   return t;
 }
 
+// Audioclips: `offset` is in seconden van het bronbestand. Met `warp` volgt de clip het projecttempo
+// (het bestand heeft tempo `srcBpm`); `stretch` rekt daar bovenop (2 = twee keer zo lang).
+// `mode`: 'beats' (ritmisch), 'tones' (tonaal) of 'repitch' (sneller = hoger, zoals een draaitafel).
+// Met `loop` herhaalt het bestand vanaf `loopStart` (seconden) tot het einde van de clip.
+export const AUDIO_CLIP_DEFAULTS = {
+  audioId: null, offset: 0, gain: 1, fadeIn: 0, fadeOut: 0,
+  warp: false, srcBpm: 120, stretch: 1, mode: 'beats', transpose: 0, fine: 0, reverse: false, loop: false, loopStart: 0,
+};
+
 export function createClip(kind, start, length = BEATS_PER_BAR, extra = {}) {
-  if (kind === 'audio') return { id: uid('c'), start, length, name: '', audioId: null, offset: 0, gain: 1, fadeIn: 0, fadeOut: 0, ...extra };
+  if (kind === 'audio') return { id: uid('c'), start, length, name: '', ...AUDIO_CLIP_DEFAULTS, ...extra };
   return { id: uid('c'), start, length, pattern: length, name: '', notes: [], ...extra };
 }
 
+// Return-sporen (sends): standaard een galm en een echo, waar elk spoor iets naartoe kan sturen.
+export function createReturn(name, inserts = [], index = 0) {
+  return { id: uid('r'), name, letter: String.fromCharCode(65 + index), volume: 0, pan: 0, mute: false, inserts };
+}
+export const defaultReturns = () => [
+  createReturn('Galm', [createInsert('plate', { mix: 1, decay: 0.72, predelay: 0.018 })], 0),
+  createReturn('Echo', [createInsert('delay', { time: 0.75, feedback: 0.42, tone: 4200, pingpong: true, mix: 1 }), createInsert('eq', { lowCut: 180 })], 1),
+];
+
 export function createProject(name = 'Nieuw project') {
   const now = Date.now();
-  return { id: uid('p'), version: 2, name, bpm: 120, loop: { on: true, start: 0, end: 16 }, metronome: false, masterVolume: 0, masterInserts: defaultMasterInserts(), tracks: [], created: now, updated: now };
+  return { id: uid('p'), version: 3, name, bpm: 120, loop: { on: true, start: 0, end: 16 }, metronome: false, masterVolume: 0, masterInserts: defaultMasterInserts(), returns: defaultReturns(), tracks: [], created: now, updated: now };
+}
+
+// ---------- Tijdrekken van audioclips ----------
+
+// Uitvoerseconden per bronseconde.
+export const audioTimeRatio = (clip, bpm) => (clip.warp ? (clip.srcBpm || bpm) / bpm : 1) * (clip.stretch || 1);
+// Toonhoogtefactor (bij repitch hoort de toonhoogte bij de snelheid, dus dan 1).
+export const audioPitch = (clip) => (clip.mode === 'repitch' ? 1 : 2 ** ((clip.transpose || 0) / 12 + (clip.fine || 0) / 1200));
+// Lengte van het bronmateriaal (vanaf offset) in tellen van het project.
+export const audioSourceBeats = (clip, srcDur, bpm) => (Math.max(0, srcDur - (clip.offset || 0)) * audioTimeRatio(clip, bpm) * bpm) / 60;
+
+// Bronpositie (s) die bij tel `x` in de clip hoort, met herhalen als de clip loopt.
+export function audioSourceAt(clip, x, spb, srcDur, bpm) {
+  let p = (clip.offset || 0) + (x * spb) / audioTimeRatio(clip, bpm);
+  if (clip.loop && p >= srcDur) {
+    const ls = Math.min(clip.loopStart || 0, srcDur - 0.01);
+    p = ls + ((p - ls) % (srcDur - ls));
+  }
+  return p;
+}
+
+// De stukken bron die een clip afspeelt vanaf `offsetBeats`: [{ at: uitvoerseconden vanaf dat punt, src: bronseconde, dur: uitvoerseconden }].
+export function audioSegments(clip, offsetBeats, spb, srcDur, bpm) {
+  const T = audioTimeRatio(clip, bpm);
+  const total = (clip.length - offsetBeats) * spb;
+  const ls = clip.loop ? Math.min(clip.loopStart || 0, Math.max(0, srcDur - 0.01)) : 0;
+  const segs = [];
+  let t = 0;
+  let src = (clip.offset || 0) + (offsetBeats * spb) / T;
+  if (src >= srcDur) {
+    if (!clip.loop) return segs;
+    src = audioSourceAt(clip, offsetBeats, spb, srcDur, bpm);
+  }
+  while (t < total - 1e-6 && segs.length < 4000) {
+    const dur = Math.min(total - t, (srcDur - src) * T);
+    if (dur <= 1e-6) break;
+    segs.push({ at: t, src, dur });
+    t += dur;
+    if (!clip.loop) break;
+    src = ls;
+  }
+  return segs;
+}
+
+// Snijdt een clip op tel `at` (absoluut) in twee. Geeft [links, rechts] terug, of null als `at` niet in de clip valt.
+export function splitClip(clip, at, { audio = false, spb = 0.5, srcDur = Infinity, bpm = 120 } = {}) {
+  const cut = at - clip.start;
+  if (cut <= 1e-6 || cut >= clip.length - 1e-6) return null;
+  const left = { ...structuredClone(clip), length: cut };
+  const right = { ...structuredClone(clip), id: uid('c'), start: at, length: clip.length - cut };
+  if (audio) {
+    left.fadeOut = 0;
+    right.fadeIn = 0;
+    left.fadeIn = Math.min(left.fadeIn || 0, cut);
+    right.fadeOut = Math.min(right.fadeOut || 0, right.length);
+    right.offset = Number.isFinite(srcDur) ? audioSourceAt(clip, cut, spb, srcDur, bpm) : (clip.offset || 0) + (cut * spb) / audioTimeRatio(clip, bpm);
+    return [left, right];
+  }
+  // Noten (met herhalingen van het patroon) uitschrijven en verdelen.
+  const pl = patternOf(clip);
+  const all = [];
+  for (let k = 0; k * pl < clip.length; k++) {
+    for (const n of clip.notes) {
+      if (n.t >= pl) continue;
+      const t = k * pl + n.t;
+      if (t < clip.length) all.push({ ...n, t, d: Math.min(n.d, clip.length - t) });
+    }
+  }
+  left.notes = all.filter((n) => n.t < cut).map((n) => ({ ...n, d: Math.min(n.d, cut - n.t) }));
+  right.notes = all.filter((n) => n.t >= cut).map((n) => ({ ...n, t: n.t - cut }));
+  left.pattern = left.length;
+  right.pattern = right.length;
+  return [left, right];
 }
 
 export const clipEnd = (c) => c.start + c.length;
@@ -237,13 +329,17 @@ export function clipFromRecording(kind, startBeat, endBeat, events, grid = 0) {
 
 // Vult ontbrekende velden aan in projecten van oudere versies.
 export function migrate(project) {
-  const p = { ...createProject(project.name), ...project, version: 2 };
+  const p = { ...createProject(project.name), ...project, version: 3 };
   p.loop = { ...createProject().loop, ...project.loop };
   p.masterInserts = project.masterInserts ? project.masterInserts.map(normalizeInsert).filter(Boolean) : defaultMasterInserts();
+  p.returns = project.returns
+    ? project.returns.map((r, i) => ({ ...createReturn(r.name, [], i), ...r, inserts: (r.inserts || []).map(normalizeInsert).filter(Boolean) }))
+    : defaultReturns();
   p.tracks = (project.tracks || []).map((t, i) => {
     const { fx, ...rest } = t;
     const track = { ...createTrack(t.kind, i), ...rest };
     track.inserts = t.inserts ? t.inserts.map(normalizeInsert).filter(Boolean) : fxToInserts(fx);
+    track.sends = { ...t.sends };
     if (t.kind === 'synth') track.synth = { ...defaultSynth(t.synth?.preset), ...t.synth };
     if (t.kind === 'drums') track.drums = { ...defaultDrums(), ...t.drums, pads: { ...t.drums?.pads } };
     if (t.kind === 'sampler') track.sampler = { ...defaultSampler(), ...t.sampler };
@@ -283,7 +379,7 @@ export function demoProject() {
 
   const pad = createTrack('sampler', 2, 'Akkoorden');
   pad.sampler = defaultSampler('epiano');
-  pad.inserts = [createInsert('chorus', { mix: 0.3 }), createInsert('pump', { amount: 0.55 }), createInsert('reverb', { size: 2.8, mix: 0.25 })];
+  pad.inserts = [createInsert('ensemble', { mode: 1, mix: 0.4 }), createInsert('pump', { amount: 0.55 })];
   const chords = createClip('sampler', 0, 32, { pattern: 16, name: 'Akkoorden' });
   const voicings = [[57, 60, 64, 67], [53, 57, 60, 64], [55, 60, 64, 67], [55, 59, 62, 67]];
   voicings.forEach((v, bar) => {
@@ -293,12 +389,17 @@ export function demoProject() {
 
   const lead = createTrack('synth', 3, 'Melodie');
   lead.synth = defaultSynth('Kalimba');
-  lead.inserts = [createInsert('delay', { time: 0.75, feedback: 0.4, mix: 0.28 }), createInsert('reverb', { size: 2.2, mix: 0.22 })];
+  lead.inserts = [createInsert('tape', { drive: 4, wow: 0.25, flutter: 0.2 })];
   const melody = createClip('synth', 16, 16, { pattern: 16, name: 'Melodie' });
   const line = [[0, 76], [0.5, 72], [1, 69], [2, 72], [2.5, 74], [4, 72], [4.5, 69], [5, 65], [6, 69], [6.5, 72], [8, 72], [8.5, 76], [9, 79], [10, 76], [12, 74], [12.5, 71], [13, 67], [14, 71]];
   for (const [t, pch] of line) melody.notes.push({ t, d: 0.45, p: pch, v: 0.8 });
   lead.clips.push(melody);
 
+  // Galm en echo via de return-sporen in plaats van per spoor.
+  const [verb, echo] = p.returns;
+  drums.sends = { [verb.id]: -22 };
+  pad.sends = { [verb.id]: -9 };
+  lead.sends = { [verb.id]: -10, [echo.id]: -8 };
   p.tracks.push(drums, bass, pad, lead);
   return p;
 }

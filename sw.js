@@ -1,5 +1,5 @@
 // Service worker: de app werkt ook offline. Netwerk eerst, met de cache als terugval.
-const VERSION = 'pulsestudio-v4';
+const VERSION = 'pulsestudio-v5';
 const FONT_CACHE = 'pulsestudio-fonts';
 const SHELL = [
   './', './index.html', './manifest.webmanifest', './css/app.css', './icons/icon.svg',
@@ -7,6 +7,7 @@ const SHELL = [
   './js/audio/engine.js', './js/audio/chain.js', './js/audio/instruments.js', './js/audio/recorder.js',
   './js/audio/plugins.js', './js/audio/plugin-defs.js', './js/audio/library.js',
   './js/audio/dsp.js', './js/audio/samplelib.js', './js/audio/patterns.js',
+  './js/audio/stretch.js', './js/audio/stretch-worker.js', './js/audio/warp.js', './js/audio/worklets.js', './js/audio/loudness.js',
   './js/ui/dom.js', './js/ui/theme.js', './js/ui/knob.js', './js/ui/devices.js', './js/ui/arrange.js', './js/ui/editor.js',
   './js/ui/mixer.js', './js/ui/inspector.js', './js/ui/browser.js',
 ];

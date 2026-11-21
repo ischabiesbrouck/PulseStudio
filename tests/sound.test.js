@@ -61,6 +61,7 @@ test('het voorbeeldproject gebruikt de nieuwe effecten', () => {
   const p = demoProject();
   const types = p.tracks.flatMap((t) => t.inserts.map((i) => i.type));
   assert.ok(types.includes('pump'));
-  assert.ok(types.includes('reverb'));
+  assert.ok(types.includes('ensemble') && types.includes('tape'));
+  assert.ok(p.returns.some((r) => r.inserts.some((i) => i.type === 'plate')), 'galm via een return');
   assert.equal(p.tracks[0].drums.kit, '909');
 });

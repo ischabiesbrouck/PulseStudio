@@ -19,6 +19,10 @@ import { INSTRUMENTS, CREDITS, loadInstrument, loadKit, isSampleKit } from './au
 import { DRUM_KITS } from './audio/instruments.js';
 import { findPattern, isDrumPattern, drumNotes, melodicNotes } from './audio/patterns.js';
 import { preloadProject } from './audio/engine.js';
+import { analyseTempo, onWarpChange } from './audio/warp.js';
+import { splitClip, audioTimeRatio } from './model.js';
+import { zipFiles } from './wav.js';
+import { measure } from './audio/loudness.js';
 
 const buffers = new Map();
 const peaks = new Map();
@@ -47,7 +51,11 @@ const app = {
   pickSample,
   dropItem,
   previewItem,
-  showMaster() { state.view.inspectMaster = true; app.showPanel('sound'); },
+  showMaster() { state.view.inspectMaster = true; state.view.inspectReturn = null; app.showPanel('sound'); },
+  showReturn(id) { state.view.inspectMaster = false; state.view.inspectReturn = id; app.showPanel('sound'); },
+  say(text) { ui.info.textContent = text || DEFAULT_INFO; },
+  splitSelected: () => splitSelected(),
+  bounceTrack: (id) => bounceTrack(id),
   openBrowser(tab, group) { setBrowser(true); browser.openTo(tab, group); },
   setPanelCtx: (...nodes) => panelCtx.replaceChildren(...nodes.filter(Boolean)),
 };
@@ -224,10 +232,11 @@ async function saveNow() {
 
 subscribe((scope) => {
   switch (scope) {
-    case 'select': state.view.inspectMaster = false; arrange.updateSelection(); mixer.updateSelection(); if (state.view.panel !== 'mixer') renderPanel(); break;
+    case 'select': state.view.inspectMaster = false; state.view.inspectReturn = null; arrange.updateSelection(); mixer.updateSelection(); if (state.view.panel !== 'mixer') renderPanel(); break;
     case 'params': engine.sync(); break;
     case 'notes': arrange.render(); editor.draw(); break;
-    case 'arrange': case 'clip': case 'view': arrange.render(); break;
+    case 'arrange': case 'clip': arrange.render(); syncSoon(); break;
+    case 'view': arrange.render(); break;
     case 'loop': arrange.render(); updateTransport(); break;
     case 'transport': engine.sync(); updateTransport(); break;
     case 'panel': renderPanel(); break;
@@ -236,6 +245,17 @@ subscribe((scope) => {
   if (!['select', 'view', 'panel'].includes(scope)) scheduleSave();
   ui.undo.disabled = !canUndo();
   ui.redo.disabled = !canRedo();
+});
+
+// Na slepen of draaien aan een clip: even wachten en dan pas de gerekte versies laten uitrekenen.
+let syncTimer = null;
+function syncSoon() { clearTimeout(syncTimer); syncTimer = setTimeout(() => engine.sync(), 350); }
+
+// Melding in de infobalk zolang er audio op tempo wordt gerekt.
+let warpWasBusy = false;
+onWarpChange((n) => {
+  if (n > 0) { ui.rate.textContent = `Tijdrekken… (${n})`; warpWasBusy = true; }
+  else if (warpWasBusy) { warpWasBusy = false; updateTransport(); }
 });
 
 function frame() {
@@ -340,7 +360,8 @@ async function finishRecording() {
       await store.saveAudio({ id, projectId: p.id, name: 'Opname', blob });
       registerAudio(id, buf);
       const track = findTrack(rec.audioTrackId);
-      if (track) added.push([track, createClip('audio', rec.startBeat, buf.duration / spb, { audioId: id, name: 'Opname' })]);
+      // Opgenomen op het projecttempo, dus kan meteen meelopen als het tempo later verandert.
+      if (track) added.push([track, createClip('audio', rec.startBeat, buf.duration / spb, { audioId: id, name: 'Opname', warp: true, srcBpm: p.bpm, mode: 'tones' })]);
     } catch (err) {
       toast('De opname kon niet worden verwerkt.');
       console.error(err);
@@ -427,6 +448,7 @@ window.addEventListener('keydown', (e) => {
     if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
     else if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); redo(); }
     else if (k === 'd') { e.preventDefault(); duplicateSelected(); }
+    else if (k === 'e') { e.preventDefault(); splitSelected(); }
     else if (k === 's') { e.preventDefault(); saveNow(); toast('Opgeslagen.'); }
     return;
   }
@@ -467,6 +489,51 @@ function deleteSelectedClip() {
   const track = trackOfClip(clip.id);
   commit(() => track.clips.splice(track.clips.indexOf(clip), 1));
   select(track.id, null);
+}
+
+// Splitst de geselecteerde clip op de afspeelkop.
+function splitSelected() {
+  const clip = selectedClip();
+  if (!clip) { toast('Selecteer eerst een clip.'); return; }
+  const track = trackOfClip(clip.id);
+  const p = state.project;
+  const at = app.playhead();
+  const audio = track.kind === 'audio';
+  const buf = audio ? buffers.get(clip.audioId) : null;
+  const parts = splitClip(clip, at, { audio, spb: 60 / p.bpm, srcDur: buf ? buf.duration : Infinity, bpm: p.bpm });
+  if (!parts) { toast('Zet de afspeelkop binnen de clip om te splitsen.'); return; }
+  commit(() => { track.clips.splice(track.clips.indexOf(clip), 1, ...parts); });
+  select(track.id, parts[1].id);
+}
+
+// Rendert een spoor (met effecten en sends) naar audio op een nieuw spoor en dempt het origineel.
+async function bounceTrack(trackId) {
+  const p = state.project;
+  const track = findTrack(trackId);
+  if (!track || !track.clips.length) { toast('Dit spoor heeft nog geen clips.'); return; }
+  toast(`"${track.name}" wordt naar audio omgezet…`, 60000);
+  try {
+    const first = Math.min(...track.clips.map((c) => c.start));
+    const end = Math.max(...track.clips.map((c) => c.start + c.length));
+    const buf = await renderProject(p, buffers, { only: track.id, end, tail: 2, sampleRate: engine.ctx?.sampleRate || 44100 });
+    // Alles vóór de eerste clip wegknippen.
+    const spb = 60 / p.bpm;
+    const skip = Math.floor(first * spb * buf.sampleRate);
+    const trimmed = new AudioBuffer({ length: Math.max(1, buf.length - skip), numberOfChannels: 2, sampleRate: buf.sampleRate });
+    for (let c = 0; c < 2; c++) trimmed.copyToChannel(buf.getChannelData(c).subarray(skip), c);
+    const name = `${track.name} (audio)`;
+    const blob = new Blob([encodeWav(channelsOf(trimmed), trimmed.sampleRate, 24)], { type: 'audio/wav' });
+    const id = await storeAudio(blob, name, trimmed);
+    const t = createTrack('audio', p.tracks.length, name);
+    t.color = track.color;
+    t.clips.push(createClip('audio', first, end - first, { audioId: id, name, warp: true, srcBpm: p.bpm, mode: 'tones' }));
+    commit(() => { p.tracks.splice(p.tracks.indexOf(track) + 1, 0, t); track.mute = true; });
+    select(t.id, t.clips[0].id);
+    toast(`Klaar: "${name}" staat eronder; het origineel is gedempt.`, 4000);
+  } catch (err) {
+    toast(`Omzetten is mislukt: ${err.message}`, 4000);
+    console.error(err);
+  }
 }
 
 function duplicateSelected() {
@@ -513,7 +580,18 @@ async function importAudio(file, trackId, beat) {
   await store.saveAudio({ id, projectId: p.id, name: file.name, blob: file });
   registerAudio(id, buf);
   const name = file.name.replace(/\.[^.]+$/, '');
-  const clip = createClip('audio', beat ?? snapFloor(playhead, BEATS_PER_BAR), buf.duration / (60 / p.bpm), { audioId: id, name });
+  // Tempo bepalen: loops en bestanden met een tempo in de naam gaan meteen het projecttempo volgen.
+  let warp = {};
+  let tempo = null;
+  try { tempo = await analyseTempo(buf, file.name); } catch { tempo = null; }
+  if (tempo?.bpm && (tempo.source === 'naam' || tempo.source === 'loop')) {
+    warp = { warp: true, srcBpm: tempo.bpm, loop: !!tempo.loop, mode: 'beats' };
+  } else if (tempo?.bpm) {
+    warp = { srcBpm: tempo.bpm };
+  }
+  const len = (buf.duration * (warp.warp ? warp.srcBpm / p.bpm : 1)) / (60 / p.bpm);
+  const clip = createClip('audio', beat ?? snapFloor(playhead, BEATS_PER_BAR), warp.loop ? Math.round(len) || len : len, { audioId: id, name, ...warp });
+  if (warp.warp) toast(`"${name}": ${warp.srcBpm} BPM${tempo.source === 'naam' ? ' (uit de naam)' : ''}. Volgt nu het projecttempo; met de randen verleng of rek je hem.`, 4500);
   let track = findTrack(trackId);
   commit(() => {
     if (!track || track.kind !== 'audio') {
@@ -626,7 +704,12 @@ async function dropItem(data, { trackId = null, beat = null, useSelection = fals
       return;
     }
     let track = target?.kind === 'audio' ? target : null;
-    const clip = createClip('audio', at, buf.duration / (60 / p.bpm), { audioId: id, name: item.name });
+    // Gemaakt op het huidige tempo: loops en tempo-effecten volgen voortaan het projecttempo.
+    const loopish = item.cat === 'Drumloops' || item.cat === 'Melodische loops';
+    const warp = loopish || item.cat === 'Effecten' || item.cat === 'Akkoorden'
+      ? { warp: true, srcBpm: p.bpm, loop: loopish, mode: item.cat === 'Drumloops' ? 'beats' : 'tones' } : {};
+    const beats = buf.duration / (60 / p.bpm);
+    const clip = createClip('audio', at, loopish ? Math.round(beats * 64) / 64 : beats, { audioId: id, name: item.name, ...warp });
     commit(() => {
       if (!track) { track = createTrack('audio', p.tracks.length, item.name); p.tracks.push(track); }
       track.clips.push(clip);
@@ -680,6 +763,8 @@ async function dropItem(data, { trackId = null, beat = null, useSelection = fals
   }
   if (data.kind === 'fx') {
     if (useSelection && state.view.inspectMaster) { commit(() => p.masterInserts.push(createInsert(data.id))); app.showMaster(); return; }
+    const ret = useSelection && (p.returns || []).find((r) => r.id === state.view.inspectReturn);
+    if (ret) { commit(() => ret.inserts.push(createInsert(data.id, ['plate', 'freeverb', 'reverb', 'delay', 'chorus', 'ensemble'].includes(data.id) ? { mix: 1 } : {}))); app.showReturn(ret.id); return; }
     if (!target) { toast('Sleep een effect op een spoor, of in de keten in het Klank-paneel.'); return; }
     commit(() => target.inserts.push(createInsert(data.id)));
     select(target.id, null);
@@ -691,18 +776,59 @@ async function dropItem(data, { trackId = null, beat = null, useSelection = fals
 // ---------- Exporteren ----------
 
 let exporting = false;
-async function exportWav() {
-  if (exporting) return;
+const exportOpts = { what: 'mix', bits: 24, rate: 44100 };
+try { Object.assign(exportOpts, JSON.parse(localStorage.getItem('pulsestudio.export') || '{}')); } catch { /* geen opslag */ }
+
+function exportWav() {
   const p = state.project;
   if (projectEnd(p) <= 0) { toast('Er staat nog niets in het project om te exporteren.'); return; }
+  const pickRow = (label, key, options) => h('div.exp-row', {}, h('span.lbl', {}, label),
+    h('div.pick', { role: 'radiogroup', 'aria-label': label }, options.map(([v, text, tip]) => {
+      const b = h('button', { type: 'button', role: 'radio', title: tip || null, class: exportOpts[key] === v ? 'on' : null, 'aria-checked': String(exportOpts[key] === v) }, text);
+      b.addEventListener('click', () => {
+        exportOpts[key] = v;
+        for (const x of b.parentNode.children) { x.classList.toggle('on', x === b); x.setAttribute('aria-checked', String(x === b)); }
+      });
+      return b;
+    })));
+  const go = h('button.btn.primary', { onclick: () => { dlg.close(); runExport(); } }, icon('download', 15), 'Exporteren');
+  const dlg = dialog('Exporteren',
+    h('div.exp', {},
+      pickRow('Wat', 'what', [['mix', 'Mix (stereo)', 'Het hele nummer via de master'], ['stems', 'Stems (zip)', 'Elk spoor apart, even lang, met zijn effecten en sends maar zonder masterketen']]),
+      pickRow('Bitdiepte', 'bits', [[16, '16 bit', 'Cd-kwaliteit, met dither'], [24, '24 bit', 'Studiokwaliteit, voor verder mixen of masteren']]),
+      pickRow('Samplefrequentie', 'rate', [[44100, '44,1 kHz'], [48000, '48 kHz', 'Standaard voor video']]),
+      h('p.hint', {}, 'Na het exporteren zie je de luidheid (LUFS) en de piek. Streamingdiensten spelen af rond -14 LUFS; luider maakt het daar niet harder.')),
+    h('div.dlg-actions', { style: { justifyContent: 'flex-end', paddingBottom: '16px' } }, h('button.btn', { onclick: () => dlg.close() }, 'Annuleren'), go));
+}
+
+async function runExport() {
+  if (exporting) return;
+  const p = state.project;
+  try { localStorage.setItem('pulsestudio.export', JSON.stringify(exportOpts)); } catch { /* geen opslag */ }
   exporting = true;
-  toast('Exporteren… dit kan even duren.', 60000);
+  const safe = p.name.replace(/[\\/:*?"<>|]+/g, '').trim() || 'PulseStudio';
+  const { bits, rate } = exportOpts;
   try {
-    const buf = await renderProject(p, buffers);
-    const wav = encodeWav(channelsOf(buf), buf.sampleRate);
-    const safe = p.name.replace(/[\\/:*?"<>|]+/g, '').trim() || 'PulseStudio';
-    download(new Blob([wav], { type: 'audio/wav' }), `${safe}.wav`);
-    toast(`Klaar: "${safe}.wav" staat in je downloads.`, 4000);
+    if (exportOpts.what === 'stems') {
+      const end = projectEnd(p);
+      const files = [];
+      const tracks = p.tracks.filter((t) => t.clips.length);
+      for (const [i, t] of tracks.entries()) {
+        toast(`Stems exporteren… ${i + 1} van ${tracks.length}: ${t.name}`, 60000);
+        const buf = await renderProject(p, buffers, { only: t.id, end, sampleRate: rate });
+        files.push({ name: `${String(i + 1).padStart(2, '0')} ${t.name.replace(/[\\/:*?"<>|]+/g, '')}.wav`, data: encodeWav(channelsOf(buf), buf.sampleRate, bits) });
+      }
+      download(zipFiles(files), `${safe} - stems.zip`);
+      toast(`Klaar: ${files.length} stems in "${safe} - stems.zip".`, 4500);
+    } else {
+      toast('Exporteren… dit kan even duren.', 60000);
+      const buf = await renderProject(p, buffers, { sampleRate: rate });
+      const ch = channelsOf(buf);
+      download(new Blob([encodeWav(ch, buf.sampleRate, bits)], { type: 'audio/wav' }), `${safe}.wav`);
+      const m = measure(ch, buf.sampleRate);
+      const lufsText = Number.isFinite(m.integrated) ? `${m.integrated.toFixed(1)} LUFS` : 'stil';
+      toast(`Klaar: "${safe}.wav" (${bits} bit, ${rate / 1000} kHz). Luidheid ${lufsText}, piek ${gainToDb(m.peak).toFixed(1)} dB.`, 6000);
+    }
   } catch (err) {
     toast(`Exporteren is mislukt: ${err.message}`, 4000);
     console.error(err);
@@ -779,7 +905,8 @@ function showHelp() {
   const rows = [
     ['Spatie', 'Afspelen / pauze'], ['Home', 'Naar het begin'], ['R', 'Opnemen'], ['L', 'Loop aan/uit'], ['M', 'Metronoom'],
     ['A W S E D F T G Y H U J K', 'Noten spelen op het geselecteerde spoor'], ['Z / X', 'Octaaf lager / hoger'],
-    ['Ctrl+Z / Ctrl+Shift+Z', 'Ongedaan maken / opnieuw'], ['Ctrl+D', 'Clip dupliceren'], ['Delete', 'Clip of noot wissen'],
+    ['Ctrl+Z / Ctrl+Shift+Z', 'Ongedaan maken / opnieuw'], ['Ctrl+D', 'Clip dupliceren'], ['Ctrl+E', 'Clip splitsen op de afspeelkop'], ['Delete', 'Clip of noot wissen'],
+    ['Rand van een clip slepen', 'Korter of langer maken (audio met loop herhaalt)'], ['Hoekje rechtsonder of Alt + rechterrand', 'Rekken: het geluid of de noten gaan mee'],
     ['Dubbelklik in een spoor', 'Nieuwe clip (of audio kiezen)'], ['Slepen in de liniaal', 'Loopgebied kiezen (Shift: per tel)'],
     ['Ctrl + scrollwiel', 'In- en uitzoomen'], ['Shift tijdens slepen', 'Fijner raster'], ['Dubbelklik op een schuif', 'Standaardwaarde'],
   ];

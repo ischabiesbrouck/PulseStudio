@@ -1,7 +1,7 @@
 // Mixer: kanaalstroken met inserts, panknop, dB-schaal, stereometers met piekvasthouden en fader; plus een spectrumanalyser.
 import { state, commit, gesture, select } from '../state.js';
-import { gainToDb, clamp } from '../model.js';
-import { PLUGIN_DEFS } from '../audio/plugin-defs.js';
+import { gainToDb, clamp, createReturn } from '../model.js';
+import { PLUGIN_DEFS, createInsert } from '../audio/plugin-defs.js';
 import { h } from './dom.js';
 import { knob } from './knob.js';
 
@@ -62,10 +62,73 @@ export function createMixer(app) {
     },
     h('div.strip-name', { title: track.name }, h('span', {}, track.name), h('span.tkind', {}, KIND_TAG[track.kind])),
     insertList(track.inserts, open),
+    sendKnobs(track),
     knob({ label: 'Pan', min: -1, max: 1, step: 0.01, def: 0, small: true, size: 34, get: () => track.pan, set: (v) => { track.pan = v; }, format: panText }),
     h('div.strip-fader', {}, scale(), meterEl, fader(() => track.volume, (v) => { track.volume = v; })),
     h('div.readouts', {}, peakEl, h('span.rd-vol', {}, dbText(track.volume))),
     h('div.strip-btns', {}, btn('M', 'mute', 'Dempen'), btn('S', 'solo', 'Solo'), btn('●', 'arm', 'Opname aan')));
+  }
+
+  // Sends: hoeveel van dit spoor (na de fader) naar elke return gaat.
+  function sendKnobs(track) {
+    const rs = state.project.returns || [];
+    if (!rs.length) return null;
+    return h('div.sends', {}, rs.map((r) => knob({
+      label: r.letter, min: -60, max: 6, step: 0.5, def: -60, small: true, size: 28,
+      title: `Send naar return ${r.letter} (${r.name}): sleep omhoog of omlaag, dubbelklik = uit`,
+      get: () => track.sends?.[r.id] ?? -60, set: (v) => { track.sends ||= {}; track.sends[r.id] = v; },
+      format: (v) => (v <= -60 ? 'uit' : `${Math.round(v)}`),
+    })));
+  }
+
+  function returnStrip(r) {
+    const [meterEl, peakEl] = meterPair(r.id);
+    const open = () => app.showReturn(r.id);
+    return h('div.strip.ret', { dataset: { ret: r.id } },
+      h('div.strip-name', { title: `Return ${r.letter}: ${r.name}` }, h('span', {}, `${r.letter} · ${r.name}`), h('span.tkind', {}, 'Return')),
+      insertList(r.inserts, open),
+      knob({ label: 'Pan', min: -1, max: 1, step: 0.01, def: 0, small: true, size: 34, get: () => r.pan, set: (v) => { r.pan = v; }, format: panText }),
+      h('div.strip-fader', {}, scale(), meterEl, fader(() => r.volume, (v) => { r.volume = v; })),
+      h('div.readouts', {}, peakEl, h('span.rd-vol', {}, dbText(r.volume))),
+      h('div.strip-btns', {},
+        h('button.tbtn', { class: r.mute ? 'on mute' : null, title: 'Dempen', 'aria-pressed': String(!!r.mute), onclick: () => commit(() => { r.mute = !r.mute; }) }, 'M'),
+        h('button.tbtn', { onclick: open, title: 'Effecten op deze return' }, 'FX')));
+  }
+
+  function addReturn() {
+    const p = state.project;
+    p.returns ||= [];
+    const used = new Set(p.returns.map((r) => r.letter));
+    let i = 0;
+    while (used.has(String.fromCharCode(65 + i))) i++;
+    const r = createReturn(`Return ${String.fromCharCode(65 + i)}`, [createInsert('freeverb', { mix: 1 })], i);
+    commit(() => p.returns.push(r));
+    app.showReturn(r.id);
+  }
+
+  // Luidheid (EBU R128), piek en correlatie van de master.
+  const loudEls = {};
+  const loudRow = (key, label, tip) => h('div.loud-row', { title: tip }, h('span.lbl', {}, label), (loudEls[key] = h('span.loud-val', {}, '–')));
+  const corrBar = h('div.corr', { title: 'Correlatie: +1 is mono, 0 is breed, onder 0 vallen er bij mono-afspelen dingen weg' }, h('i'));
+  const loud = h('div.loud', {},
+    h('div.loud-head', {}, h('strong', {}, 'Luidheid'), h('button.tbtn', { title: 'Meting opnieuw beginnen', onclick: () => app.engine.loud.reset() }, 'Reset')),
+    loudRow('momentary', 'Momentaan', 'LUFS over de laatste 400 ms'),
+    loudRow('shortTerm', 'Korte termijn', 'LUFS over de laatste 3 seconden'),
+    loudRow('integrated', 'Geïntegreerd', 'LUFS over alles sinds afspelen (met poorten, zoals streamingdiensten meten). Spotify en YouTube: ongeveer -14'),
+    loudRow('peak', 'Piek', 'Hoogste samplewaarde sinds afspelen'),
+    h('div.loud-row', {}, h('span.lbl', {}, 'Correlatie'), corrBar));
+  analyzer.append(loud);
+  const fmtL = (v) => (Number.isFinite(v) && v > -70 ? v.toFixed(1) : '–');
+  function drawLoudness(engine) {
+    if (!loud.isConnected || !engine?.loudness) return;
+    const l = engine.loudness();
+    loudEls.momentary.textContent = fmtL(l.momentary);
+    loudEls.shortTerm.textContent = fmtL(l.shortTerm);
+    loudEls.integrated.textContent = `${fmtL(l.integrated)} LUFS`;
+    const pk = gainToDb(l.peak);
+    loudEls.peak.textContent = l.peak > 0.001 ? `${pk.toFixed(1)} dB` : '–';
+    loudEls.peak.classList.toggle('over', pk > -0.1);
+    corrBar.firstChild.style.left = `${((clamp(l.corr, -1, 1) + 1) / 2) * 100}%`;
   }
 
   function render() {
@@ -79,7 +142,8 @@ export function createMixer(app) {
       h('div.strip-fader', {}, scale(), meterEl, fader(() => p.masterVolume, (v) => { p.masterVolume = v; })),
       h('div.readouts', {}, peakEl, h('span.rd-vol', {}, dbText(p.masterVolume))),
       h('div.strip-btns', {}, h('button.tbtn', { onclick: () => app.showMaster(), title: 'Effecten op de master' }, 'FX')));
-    root.replaceChildren(...p.tracks.map(strip), analyzer, master);
+    const addRet = h('button.add-return', { onclick: addReturn, title: 'Nieuw return-spoor (bijvoorbeeld een tweede galm)' }, '+ Return');
+    root.replaceChildren(...p.tracks.map(strip), h('span.mix-sep'), ...(p.returns || []).map(returnStrip), addRet, analyzer, master);
   }
 
   function updateSelection() {
@@ -109,6 +173,7 @@ export function createMixer(app) {
     set('master', levels.master);
     for (const [id, pair] of levels.tracks) set(id, pair);
     drawSpectrum(engine);
+    drawLoudness(engine);
   }
 
   function drawSpectrum(engine) {

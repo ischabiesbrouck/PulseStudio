@@ -1,7 +1,7 @@
 // Browser (zijbalk links): geluiden, instrumenten en effecten zoeken, beluisteren en naar de tijdlijn of de keten slepen.
 import { state } from '../state.js';
 import { SYNTH_PRESETS, noteName } from '../model.js';
-import { PLUGIN_DEFS } from '../audio/plugin-defs.js';
+import { PLUGIN_DEFS, PLUGIN_CATS } from '../audio/plugin-defs.js';
 import { DRUM_KITS } from '../audio/instruments.js';
 import { LIBRARY, LIBRARY_CATS } from '../audio/library.js';
 import { INSTRUMENTS } from '../audio/samplelib.js';
@@ -53,7 +53,10 @@ export function createBrowser(app) {
         ...Object.entries(cats), ...Object.entries(synth),
       ];
     }
-    return [['Effecten', Object.entries(PLUGIN_DEFS).map(([id, d]) => ({ kind: 'fx', id, name: d.name, icon: 'dial', meta: '', tip: `${d.name}: ${d.info} Sleep op een spoor of in de keten.` }))]];
+    return PLUGIN_CATS.map(([cat, types]) => [cat, types.map((id) => {
+      const d = PLUGIN_DEFS[id];
+      return { kind: 'fx', id, name: d.name, icon: 'dial', meta: d.credit ? 'Vrij' : '', tip: `${d.name}: ${d.info}${d.credit ? ` ${d.credit}.` : ''} Sleep op een spoor of in de keten.` };
+    })]);
   }
 
   function row(item) {

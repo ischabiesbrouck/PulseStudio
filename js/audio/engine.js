@@ -1,8 +1,11 @@
 // Audio-engine: transport met vooruitplannen (lookahead), live spelen, meters en offline renderen.
 import { TrackChain, masterTrack, readPeak } from './chain.js';
 import { synthVoice, samplerVoice, drumHit } from './instruments.js';
-import { eventsInRange, audioStartsInRange, nextSegment, isAudible, projectEnd, audioGainEnvelope } from '../model.js';
+import { eventsInRange, audioStartsInRange, nextSegment, isAudible, projectEnd, audioGainEnvelope, audioSegments } from '../model.js';
 import { getInstrument, loadInstrument, pickZone, loadKit, isSampleKit } from './samplelib.js';
+import { loadWorklets, hasWorklets } from './plugins.js';
+import { playbackFor, prepareProject } from './warp.js';
+import { LoudnessMeter } from './loudness.js';
 
 const LOOKAHEAD = 0.15; // seconden vooruit plannen
 const STEP = 0.5;       // tellen per planstap
@@ -36,8 +39,39 @@ function playEvent(ctx, chain, track, pitch, vel, time, durSec, buffers) {
   return v;
 }
 
+// Plant één audioclip vanaf `offsetBeats`: gerekt (of als repitch zolang de gerekte versie er nog niet is), met loop en fades.
+function scheduleAudio(ctx, dest, clip, buf, offsetBeats, t, spb, bpm, sources) {
+  const pb = playbackFor(clip, buf, bpm);
+  const segs = audioSegments(clip, offsetBeats, spb, buf.duration, bpm);
+  if (!segs.length) return;
+  const g = ctx.createGain();
+  g.connect(dest);
+  audioGainEnvelope(clip, offsetBeats, spb).forEach(([dt, gain], i) => {
+    if (i === 0) g.gain.setValueAtTime(gain, t);
+    else g.gain.linearRampToValueAtTime(gain, t + dt);
+  });
+  const F = 0.002; // korte fades tegen klikken op naden en bij instappen midden in het bestand
+  for (const s of segs) {
+    const off = s.src * pb.scale;
+    if (off >= pb.buffer.duration - 1e-4) continue;
+    const src = ctx.createBufferSource();
+    src.buffer = pb.buffer;
+    src.playbackRate.value = pb.rate;
+    const sg = ctx.createGain();
+    const t0 = t + s.at, t1 = t0 + s.dur;
+    const cutStart = s.src > 0.001, cutEnd = s.src + s.dur * (pb.rate / pb.scale) < buf.duration - 0.003;
+    sg.gain.setValueAtTime(cutStart ? 0 : 1, t0);
+    if (cutStart) sg.gain.linearRampToValueAtTime(1, t0 + F);
+    if (cutEnd && s.dur > 2 * F) { sg.gain.setValueAtTime(1, t1 - F); sg.gain.linearRampToValueAtTime(0, t1); }
+    src.connect(sg).connect(g);
+    src.start(t0, off);
+    src.stop(t1);
+    sources.push({ src, end: t1 });
+  }
+}
+
 // Plant alle noten, audioclips en tempo-effecten in [from, to), waarbij tel `from` op tijd `time` valt.
-function scheduleWindow({ ctx, chains, master, project, buffers, from, to, time, spb, spanning, voices, sources }) {
+function scheduleWindow({ ctx, chains, returns, master, project, buffers, from, to, time, spb, spanning, voices, sources }) {
   for (const ev of eventsInRange(project, from, to)) {
     const chain = chains.get(ev.track.id);
     if (!chain) continue;
@@ -48,22 +82,10 @@ function scheduleWindow({ ctx, chains, master, project, buffers, from, to, time,
     const chain = chains.get(a.track.id);
     const buf = buffers.get(a.clip.audioId);
     if (!chain || !buf) continue;
-    const offset = (a.clip.offset || 0) + a.offsetBeats * spb;
-    if (offset >= buf.duration) continue;
-    const src = ctx.createBufferSource();
-    src.buffer = buf;
-    const g = ctx.createGain();
-    src.connect(g).connect(chain.input);
-    const t = time + (a.beat - from) * spb;
-    audioGainEnvelope(a.clip, a.offsetBeats, spb).forEach(([dt, gain], i) => {
-      if (i === 0) g.gain.setValueAtTime(gain, t);
-      else g.gain.linearRampToValueAtTime(gain, t + dt);
-    });
-    const dur = Math.min((a.clip.length - a.offsetBeats) * spb, buf.duration - offset);
-    src.start(t, offset, dur);
-    sources.push({ src, end: t + dur });
+    scheduleAudio(ctx, chain.input, a.clip, buf, a.offsetBeats, time + (a.beat - from) * spb, spb, project.bpm, sources);
   }
   for (const chain of chains.values()) chain.schedule(from, to, time, spb);
+  for (const chain of returns.values()) chain.schedule(from, to, time, spb);
   master.schedule(from, to, time, spb);
 }
 
@@ -73,20 +95,36 @@ export class Engine {
     this.buffers = buffers;
     this.ctx = null;
     this.chains = new Map();
+    this.returns = new Map();
     this.voices = [];
     this.sources = [];
     this.live = new Map();
     this.playing = false;
     this.anchors = [];
     this.timer = null;
+    this.loud = new LoudnessMeter();
+    this.starting = null;
   }
 
   async ensure() {
     if (!this.ctx) {
-      this.ctx = new AudioContext({ latencyHint: 'interactive' });
-      this.master = new TrackChain(this.ctx, this.ctx.destination, { spectrum: true });
-      this.scratch = new Float32Array(1024);
-      this.sync();
+      this.starting ||= (async () => {
+        const ctx = new AudioContext({ latencyHint: 'interactive' });
+        await loadWorklets(ctx);
+        this.master = new TrackChain(ctx, ctx.destination, { spectrum: true });
+        this.scratch = new Float32Array(1024);
+        // Luidheidsmeter (LUFS) achter de master.
+        if (hasWorklets(ctx)) {
+          const meter = new AudioWorkletNode(ctx, 'ps-loudness', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2], channelCount: 2, channelCountMode: 'explicit' });
+          meter.port.onmessage = (e) => this.loud.push(e.data);
+          const mute = ctx.createGain();
+          mute.gain.value = 0;
+          this.master.fader.connect(meter).connect(mute).connect(ctx.destination);
+        }
+        this.ctx = ctx;
+        this.sync();
+      })();
+      await this.starting;
     }
     if (this.ctx.state !== 'running') await this.ctx.resume();
     return this.ctx;
@@ -102,16 +140,27 @@ export class Engine {
   sync() {
     if (!this.ctx) return;
     const p = this.getProject();
+    const rids = new Set();
+    for (const r of p.returns || []) {
+      rids.add(r.id);
+      let chain = this.returns.get(r.id);
+      if (!chain) this.returns.set(r.id, (chain = new TrackChain(this.ctx, this.master.input)));
+      chain.update(r, p.bpm, !r.mute);
+    }
+    for (const [id, chain] of this.returns) if (!rids.has(id)) { chain.dispose(); this.returns.delete(id); }
     const ids = new Set();
     for (const track of p.tracks) {
       ids.add(track.id);
       let chain = this.chains.get(track.id);
       if (!chain) this.chains.set(track.id, (chain = new TrackChain(this.ctx, this.master.input)));
-      chain.update(track, p.bpm, isAudible(track, p.tracks));
+      chain.update(track, p.bpm, isAudible(track, p.tracks), false, this.returns);
     }
     for (const [id, chain] of this.chains) if (!ids.has(id)) { chain.dispose(); this.chains.delete(id); }
     this.master.update(masterTrack(p), p.bpm, true);
+    prepareProject(p, this.buffers);
   }
+
+  chainFor(key) { return key === 'master' ? this.master : this.chains.get(key) || this.returns.get(key); }
 
   play(fromBeat) {
     if (this.playing) this.stop();
@@ -121,6 +170,7 @@ export class Engine {
     this.spanning = true;
     const spb = 60 / this.getProject().bpm;
     this.anchors = [{ time: this.cursorTime, beat: fromBeat, spb }];
+    this.loud.reset();
     this.timer = setInterval(() => this.tick(), 25);
     this.tick();
   }
@@ -136,7 +186,7 @@ export class Engine {
         this.anchors.push({ time: this.cursorTime, beat: seg.from, spb });
       }
       scheduleWindow({
-        ctx: this.ctx, chains: this.chains, master: this.master, project: p, buffers: this.buffers,
+        ctx: this.ctx, chains: this.chains, returns: this.returns, master: this.master, project: p, buffers: this.buffers,
         from: seg.from, to: seg.to, time: this.cursorTime, spb, spanning: this.spanning,
         voices: this.voices, sources: this.sources,
       });
@@ -180,6 +230,7 @@ export class Engine {
     for (const v of this.voices) v.stopNow();
     for (const s of this.sources) try { s.src.stop(); } catch { /* nog niet gestart */ }
     for (const chain of this.chains.values()) chain.reset();
+    for (const chain of this.returns.values()) chain.reset();
     this.master?.reset();
     this.voices = [];
     this.sources = [];
@@ -245,13 +296,19 @@ export class Engine {
     if (!this.ctx) return { master: [0, 0], tracks };
     const stereo = (chain) => [readPeak(chain.analyserL, this.scratch), readPeak(chain.analyserR, this.scratch)];
     for (const [id, chain] of this.chains) tracks.set(id, stereo(chain));
+    for (const [id, chain] of this.returns) tracks.set(id, stereo(chain));
     return { master: stereo(this.master), tracks };
   }
 
+  // Het effect zelf (voor schermen die meer willen weten, zoals de multiband).
+  fx(chainKey, insId) { return this.chainFor(chainKey)?.slots.find((s) => s.id === insId)?.fx || null; }
+
   // Gain reduction (dB, negatief) van een compressor of limiter in een keten.
-  reduction(chainKey, insId) {
-    const chain = chainKey === 'master' ? this.master : this.chains.get(chainKey);
-    return chain?.slots.find((s) => s.id === insId)?.fx.reduction?.() ?? 0;
+  reduction(chainKey, insId) { return this.fx(chainKey, insId)?.reduction?.() ?? 0; }
+
+  loudness() {
+    const l = this.loud;
+    return { momentary: l.momentary(), shortTerm: l.shortTerm(), integrated: l.integrated(), peak: l.peak, corr: l.corr };
   }
 
   spectrum(out) {
@@ -262,20 +319,33 @@ export class Engine {
 }
 
 // Rendert het hele project (zonder loop) naar een AudioBuffer.
-export async function renderProject(project, buffers, { sampleRate = 44100, tail = 3 } = {}) {
-  const end = projectEnd(project);
-  if (end <= 0) throw new Error('Het project is leeg.');
+//   only: alleen dit spoor (met zijn sends via de returns, zonder masterketen): voor stems en bouncen.
+//   end:  vaste lengte in tellen, zodat alle stems even lang zijn.
+export async function renderProject(project, buffers, { sampleRate = 44100, tail = 3, only = null, end = null } = {}) {
+  const last = end ?? projectEnd(project);
+  if (last <= 0) throw new Error('Het project is leeg.');
   await preloadProject(project);
+  await prepareProject(project, buffers, { wait: true });
   const spb = 60 / project.bpm;
-  const ctx = new OfflineAudioContext(2, Math.ceil((end * spb + tail) * sampleRate), sampleRate);
+  const ctx = new OfflineAudioContext(2, Math.ceil((last * spb + tail) * sampleRate), sampleRate);
+  await loadWorklets(ctx);
   const master = new TrackChain(ctx, ctx.destination);
-  master.update(masterTrack(project), project.bpm, true, true);
-  const chains = new Map();
-  for (const track of project.tracks) {
+  master.update(only ? { inserts: [], pan: 0, volume: 0 } : masterTrack(project), project.bpm, true, true);
+  const returns = new Map();
+  for (const r of project.returns || []) {
     const chain = new TrackChain(ctx, master.input);
-    chain.update(track, project.bpm, isAudible(track, project.tracks), true);
+    chain.update(r, project.bpm, !r.mute, true);
+    returns.set(r.id, chain);
+  }
+  const tracks = only ? project.tracks.map((t) => ({ ...t, mute: t.id !== only, solo: false })) : project.tracks;
+  const p = only ? { ...project, tracks } : project;
+  const chains = new Map();
+  for (const track of tracks) {
+    if (only && track.id !== only) continue;
+    const chain = new TrackChain(ctx, master.input);
+    chain.update(track, project.bpm, isAudible(track, tracks), true, returns);
     chains.set(track.id, chain);
   }
-  scheduleWindow({ ctx, chains, master, project, buffers, from: 0, to: end, time: 0, spb, spanning: true, voices: [], sources: [] });
+  scheduleWindow({ ctx, chains, returns, master, project: p, buffers, from: 0, to: last, time: 0, spb, spanning: true, voices: [], sources: [] });
   return ctx.startRendering();
 }

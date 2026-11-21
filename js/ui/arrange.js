@@ -1,6 +1,6 @@
 // Arrangeerweergave: tijdlijn met sporen, clips, liniaal, loopgebied en afspeelkop.
 import { state, commit, gesture, select, findTrack, findClip } from '../state.js';
-import { BEATS_PER_BAR, projectEnd, patternOf, createClip, createTrack, snap, snapFloor, clamp, uid } from '../model.js';
+import { BEATS_PER_BAR, projectEnd, patternOf, createClip, createTrack, snap, snapFloor, clamp, uid, audioTimeRatio, audioSourceAt } from '../model.js';
 import { h, icon, param, select as selectEl } from './dom.js';
 
 export const HEADER_W = 224;
@@ -142,15 +142,28 @@ export function createArrange(app) {
   function clipEl(track, clip) {
     const w = Math.max(4, clip.length * z());
     const cv = h('canvas.clip-cv', { width: Math.min(8000, Math.ceil(w * (window.devicePixelRatio || 1))), height: 46 * (window.devicePixelRatio || 1) });
-    const reps = track.kind !== 'audio' && patternOf(clip) < clip.length ? `×${Math.ceil(clip.length / patternOf(clip))}` : '';
+    const audio = track.kind === 'audio';
+    const tags = [];
+    if (!audio && patternOf(clip) < clip.length) tags.push(`×${Math.ceil(clip.length / patternOf(clip))}`);
+    if (audio) {
+      if (clip.warp) tags.push(`${+(clip.srcBpm || 0).toFixed(2)} BPM`);
+      if (Math.abs((clip.stretch || 1) - 1) > 0.001) tags.push(`${Math.round(clip.stretch * 100)}%`);
+      if (clip.transpose) tags.push(`${clip.transpose > 0 ? '+' : ''}${clip.transpose} st`);
+      if (clip.reverse) tags.push('omgekeerd');
+      if (clip.loop) tags.push('loop');
+    }
     const el = h('div.clip', {
       class: [state.sel.clipId === clip.id ? 'selected' : null, audible(track) ? null : 'muted'].filter(Boolean).join(' ') || null,
       dataset: { clip: clip.id },
       style: { left: `${clip.start * z()}px`, width: `${w}px`, '--tc': track.color },
-      title: 'Sleep om te verplaatsen, sleep de rechterrand voor de lengte, Alt+slepen kopieert, dubbelklik opent de editor',
-    }, h('span.clip-name', {}, clip.name || (track.kind === 'audio' ? 'Audio' : 'Clip'), reps ? h('span.rep', {}, reps) : null), cv, h('span.clip-handle'));
-    if (track.kind === 'audio') {
+      title: audio
+        ? 'Sleep om te verplaatsen. Randen: inkorten of verlengen (met loop herhaalt het geluid). Hoekje rechtsonder of Alt + rechterrand: rekken op tempo. Alt+slepen kopieert.'
+        : 'Sleep om te verplaatsen, sleep de rechterrand voor de lengte, het hoekje rechtsonder rekt de noten mee, Alt+slepen kopieert, dubbelklik opent de editor',
+    }, h('span.clip-name', {}, clip.name || (audio ? 'Audio' : 'Clip'), ...tags.map((t) => h('span.rep', {}, t))), cv, h('span.clip-handle'),
+    h('span.clip-stretch', { title: audio ? 'Rekken: sleep om de clip langer of korter te maken, het geluid wordt mee gerekt (zelfde toonhoogte)' : 'Rekken: sleep om de noten mee langer of korter te maken' }));
+    if (audio) {
       el.append(
+        h('span.clip-handle.l', { title: 'Begin inkorten: sleep naar rechts of terug naar links' }),
         h('span.fade-h', { dataset: { fade: 'in' }, style: { left: `${Math.max(2, (clip.fadeIn || 0) * z() - 4)}px` }, title: 'Fade in: sleep naar rechts' }),
         h('span.fade-h', { dataset: { fade: 'out' }, style: { right: `${Math.max(2, (clip.fadeOut || 0) * z() - 4)}px` }, title: 'Fade uit: sleep naar links' }));
     }
@@ -168,18 +181,24 @@ export function createArrange(app) {
       const peaks = app.peaks.get(clip.audioId);
       const buf = app.buffers.get(clip.audioId);
       if (!peaks || !buf) return;
-      const spb = 60 / state.project.bpm;
-      const secPerPx = (clip.length * spb) / W;
+      const bpm = state.project.bpm, spb = 60 / bpm;
+      const pxPerBeat = W / clip.length;
       const step = Math.max(2, Math.round(3 * dpr)), bw = Math.max(1, step - Math.round(dpr));
+      const dur = buf.duration;
+      let prev = -1;
       for (let x = 0; x < W; x += step) {
-        const sec = (clip.offset || 0) + x * secPerPx;
-        if (sec >= buf.duration) break;
-        const v = peaks[Math.floor((sec / buf.duration) * peaks.length)] * (clip.gain ?? 1);
+        const sec = audioSourceAt(clip, x / pxPerBeat, spb, dur, bpm);
+        if (sec >= dur) break;
+        // Waar een loop opnieuw begint: een dun streepje.
+        if (prev >= 0 && sec < prev - 0.01) { g.fillStyle = 'rgba(0, 0, 0, 0.45)'; g.fillRect(x, 0, dpr, H); g.fillStyle = 'rgba(255, 255, 255, 0.88)'; }
+        prev = sec;
+        let i = Math.floor((sec / dur) * peaks.length);
+        if (clip.reverse) i = peaks.length - 1 - i;
+        const v = peaks[clamp(i, 0, peaks.length - 1)] * (clip.gain ?? 1);
         const hh = Math.max(dpr, Math.min(1, v) * (H - 6 * dpr));
         g.fillRect(x, (H - hh) / 2, bw, hh);
       }
       // Fades: het deel boven de fadelijn donker maken.
-      const pxPerBeat = W / clip.length;
       const fi = (clip.fadeIn || 0) * pxPerBeat, fo = (clip.fadeOut || 0) * pxPerBeat;
       g.fillStyle = 'rgba(8, 8, 10, 0.55)';
       g.strokeStyle = 'rgba(255, 255, 255, 0.9)';
@@ -236,20 +255,58 @@ export function createArrange(app) {
       return;
     }
     const rect = clipNode.getBoundingClientRect();
-    const resize = e.clientX > rect.right - 8;
-    const orig = { start: clip.start, length: clip.length };
+    const audio = track.kind === 'audio';
+    const atRight = e.clientX > rect.right - 8;
+    const mode = e.target.classList.contains('clip-stretch') || (atRight && e.altKey) ? 'stretch'
+      : atRight ? 'resize'
+        : audio && e.clientX < rect.left + 7 ? 'trim' : 'move';
+    const orig = structuredClone(clip);
+    const bpm = state.project.bpm, spb = 60 / bpm;
+    const buf = audio ? app.buffers.get(clip.audioId) : null;
     let current = track;
     const move = (ev) => {
       if (!g && Math.abs(ev.clientX - x0) < 3 && Math.abs(ev.clientY - y0) < 3) return;
       if (!g) {
         g = gesture();
-        if (ev.altKey && !resize) g.update(() => current.clips.push({ ...structuredClone(clip), id: uid('c') }), 'arrange');
+        if (ev.altKey && mode === 'move') g.update(() => current.clips.push({ ...structuredClone(clip), id: uid('c') }), 'arrange');
       }
       const grid = ev.shiftKey ? 0.25 : state.view.arrangeGrid;
       const dx = (ev.clientX - x0) / z();
-      if (resize) {
+      if (mode === 'resize') {
         const len = Math.max(grid, snap(orig.length + dx, grid));
         g.update(() => { clip.length = len; }, 'arrange');
+        app.say(`Lengte: ${+len.toFixed(2)} tellen${audio && !clip.loop ? ' (zet loop aan om het geluid te herhalen)' : ''}`);
+        return;
+      }
+      if (mode === 'stretch') {
+        const len = Math.max(Math.min(grid, 0.25), snap(orig.length + dx, grid));
+        const k = len / orig.length;
+        g.update(() => {
+          clip.length = len;
+          if (audio) {
+            clip.stretch = clamp((orig.stretch || 1) * k, 0.05, 20);
+            clip.fadeIn = (orig.fadeIn || 0) * k;
+            clip.fadeOut = (orig.fadeOut || 0) * k;
+          } else {
+            clip.notes = orig.notes.map((n) => ({ ...n, t: n.t * k, d: n.d * k }));
+            clip.pattern = patternOf(orig) * k;
+          }
+        }, 'arrange');
+        app.say(`Rekken: ${Math.round(k * 100)}% (${+len.toFixed(2)} tellen)${audio && clip.warp ? `, het geluid loopt nu op ${+(bpm / (clip.stretch || 1)).toFixed(1)} BPM` : ''}`);
+        return;
+      }
+      if (mode === 'trim') {
+        const T = audioTimeRatio(orig, bpm);
+        let d = snap(orig.start + dx, grid) - orig.start;
+        d = Math.min(d, orig.length - grid);
+        d = Math.max(d, -orig.start, -((orig.offset || 0) * T) / spb);
+        g.update(() => {
+          clip.start = orig.start + d;
+          clip.length = orig.length - d;
+          clip.offset = buf ? audioSourceAt(orig, d, spb, buf.duration, bpm) : Math.max(0, (orig.offset || 0) + (d * spb) / T);
+          clip.fadeIn = Math.min(Math.max(0, (orig.fadeIn || 0) - Math.max(0, d)), clip.length);
+        }, 'arrange');
+        app.say(`Begin op maat ${Math.floor(clip.start / BEATS_PER_BAR) + 1}, ${(clip.offset || 0).toFixed(2)} s in het bestand`);
         return;
       }
       const start = Math.max(0, snap(orig.start + dx, grid));
@@ -269,6 +326,7 @@ export function createArrange(app) {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
       g?.end('all');
+      if (mode !== 'move') app.say(null);
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);

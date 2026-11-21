@@ -1,6 +1,7 @@
 // Apparaten: instrumenten en effecten als hardware-achtige modules met een scherm en draaiknoppen.
 import { state, commit, gesture } from '../state.js';
-import { SYNTH_PRESETS, BASE_SYNTH, DRUM_ROWS, DRUM_KEYS, defaultSynth, noteName, clamp } from '../model.js';
+import { SYNTH_PRESETS, BASE_SYNTH, DRUM_ROWS, DRUM_KEYS, defaultSynth, noteName, clamp, audioTimeRatio } from '../model.js';
+import { analyseTempo } from '../audio/warp.js';
 import { PLUGIN_DEFS, PLUGIN_PRESETS, formatParam } from '../audio/plugin-defs.js';
 import { DRUM_KITS } from '../audio/instruments.js';
 import { INSTRUMENTS, getInstrument, loadInstrument, isSampleKit, getKit, loadKit, SAMPLE_KITS } from '../audio/samplelib.js';
@@ -169,6 +170,27 @@ function paintVu(g, W, H, gr) {
   g.stroke();
 }
 
+// Galmverval: vlakke lijn voor de hoogte, gestippeld voor het (snellere) verval van de hoogte door demping.
+function paintDecay(g, W, H, size, predelay, mix, damping) {
+  const span = Math.max(1, size * 1.15 + predelay);
+  const X = (t) => 6 + (t / span) * (W - 12);
+  gridLines(g, W, H, { ys: [H - 10], xs: [1, 2, 3].map((i) => (i * W) / 4) });
+  g.fillStyle = 'rgba(255, 255, 255, 0.35)';
+  g.fillRect(X(0) - 1, 12, 2, H - 22);
+  const pts = [], dark = [];
+  for (let i = 0; i <= 120; i++) {
+    const t = predelay + (i / 120) * (span - predelay);
+    const lvl = 0.25 + mix * 0.75;
+    pts.push([X(t), H - 10 - Math.exp((-6.9 * (t - predelay)) / size) * lvl * (H - 26)]);
+    dark.push([X(t), H - 10 - Math.exp((-6.9 * (t - predelay)) / (size * (1 - damping * 0.7))) * lvl * (H - 26)]);
+  }
+  glowCurve(g, pts, W, H, H - 10);
+  g.beginPath();
+  dark.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y)));
+  g.strokeStyle = SECOND; g.setLineDash([3, 3]); g.lineWidth = 1.2; g.stroke(); g.setLineDash([]);
+  g.font = MONO; g.fillStyle = LABEL; g.fillText(`${size.toFixed(1)} s`, W - 40, 14);
+}
+
 // ---------- Effectschermen ----------
 
 const VIZ = {
@@ -250,6 +272,61 @@ const VIZ = {
       pts.push([x0, 12], [x0 + 0.5, 12 + p.amount * (H - 22)], [x0 + sw * p.release, 12], [x0 + sw, 12]);
     }
     glowCurve(g, pts.map(([x, y]) => [x, y]), W, H, H - 10);
+  } },
+  maximizer: { w: 200, h: 116, label: 'Maximizer', live: true, paint(g, W, H, p, v) { paintVu(g, W, H, v.gr || 0); } },
+  gate: { w: 200, h: 116, label: 'Gate', live: true, paint(g, W, H, p, v) { paintVu(g, W, H, v.gr || 0); } },
+  deesser: { w: 200, h: 116, label: 'De-esser', live: true, paint(g, W, H, p, v) { paintVu(g, W, H, v.gr || 0); } },
+  transient: { w: 150, h: 116, label: 'Vorm', paint(g, W, H, p) {
+    gridLines(g, W, H, { ys: [H - 12], xs: [W / 3] });
+    const pts = [];
+    for (let i = 0; i <= 100; i++) {
+      const t = i / 100;
+      const env = t < 0.04 ? t / 0.04 : Math.exp(-(t - 0.04) * 4.5);
+      const shaped = t < 0.12 ? env * (1 + p.attack * 0.8 * (1 - t / 0.12)) : env * (1 + p.sustain * 0.7 * Math.min(1, (t - 0.12) * 4));
+      pts.push([6 + t * (W - 12), H - 12 - Math.max(0, Math.min(1.5, shaped)) * (H - 36)]);
+    }
+    g.beginPath();
+    for (let i = 0; i <= 100; i++) { const t = i / 100; const env = t < 0.04 ? t / 0.04 : Math.exp(-(t - 0.04) * 4.5); const x = 6 + t * (W - 12), y = H - 12 - env * (H - 36); i ? g.lineTo(x, y) : g.moveTo(x, y); }
+    g.strokeStyle = SECOND; g.setLineDash([3, 3]); g.lineWidth = 1.2; g.stroke(); g.setLineDash([]);
+    glowCurve(g, pts, W, H, H - 12);
+  } },
+  tape: { w: 150, h: 116, label: 'Band', paint(g, W, H, p) {
+    gridLines(g, W, H, { ys: [H / 2], xs: [W / 2] });
+    const k = 10 ** (p.drive / 20), norm = 0.5 / Math.tanh(k * 0.5);
+    const pts = [];
+    for (let i = 0; i <= 80; i++) { const x = i / 40 - 1; const yv = p.mix * Math.max(-1.2, Math.min(1.2, (Math.tanh(k * x + 0.08) - Math.tanh(0.08)) * norm)) + (1 - p.mix) * x; pts.push([6 + ((x + 1) / 2) * (W - 12), H / 2 - (yv / 1.2) * (H / 2 - 8)]); }
+    glowCurve(g, pts, W, H, null);
+  } },
+  ensemble: { w: 150, h: 116, label: 'BBD', paint(g, W, H, p) {
+    gridLines(g, W, H, { ys: [H / 2], xs: [W / 4, W / 2, (3 * W) / 4] });
+    const cyc = p.mode === 3 ? 9 : p.mode === 2 ? 3 : 2, d = p.mode === 3 ? 0.35 : 0.8;
+    const tri = (x) => 1 - 4 * Math.abs(((x % 1) + 1) % 1 - 0.5);
+    for (const [sign, color] of [[1, ORANGE], [-1, SECOND]]) {
+      g.beginPath();
+      for (let x = 0; x <= W; x += 2) { const y = H / 2 - sign * tri((x / W) * cyc) * d * (H / 2 - 14); x ? g.lineTo(x, y) : g.moveTo(x, y); }
+      g.strokeStyle = color; g.lineWidth = 1.5; g.stroke();
+    }
+    g.font = MONO; g.fillStyle = LABEL; g.fillText(['', 'I', 'II', 'I+II'][p.mode] || 'I', W - 30, H - 6);
+  } },
+  freeverb: { w: 210, h: 116, label: 'Decay', paint(g, W, H, p) { paintDecay(g, W, H, 0.4 + p.room ** 3 * 9, p.predelay, p.mix, p.damp); } },
+  plate: { w: 210, h: 116, label: 'Decay', paint(g, W, H, p) { paintDecay(g, W, H, Math.min(12, (0.15 * 6.9) / -Math.log(Math.max(0.05, p.decay))), p.predelay, p.mix, 1 - p.damping / 16000); } },
+  multiband: { w: 250, h: 116, label: 'Banden', live: true, paint(g, W, H, p, v) {
+    gridLines(g, W, H, { freqs: true, ys: [24, H / 2], yLabels: ['', ''] });
+    const edges = [20, p.lowX, Math.max(p.highX, p.lowX * 1.5), 20000];
+    const grs = v.bands || [0, 0, 0];
+    ['Laag', 'Midden', 'Hoog'].forEach((name, i) => {
+      const x0 = fx(edges[i], W) + 2, x1 = fx(edges[i + 1], W) - 2;
+      const gainDb = [p.low, p.mid, p.high][i];
+      const base = H / 2 - gainDb * 2.4;
+      g.fillStyle = ACCENT_FILL;
+      g.fillRect(x0, base, x1 - x0, H - 16 - base);
+      g.fillStyle = ORANGE;
+      g.fillRect(x0, base - 1, x1 - x0, 2);
+      const gr = Math.min(24, Math.max(0, -grs[i]));
+      if (gr > 0.05) { g.fillStyle = 'rgba(255, 255, 255, 0.85)'; g.fillRect(x0, base, x1 - x0, gr * 2.4); }
+      g.font = MONO; g.fillStyle = LABEL; g.fillText(name, x0 + 3, 14);
+      if (gr > 0.05) g.fillText(`-${gr.toFixed(1)}`, x0 + 3, 26);
+    });
   } },
   width: { w: 150, h: 116, label: 'Stereo', paint(g, W, H, p) {
     gridLines(g, W, H, { xs: [W / 2], ys: [H / 2] });
@@ -351,13 +428,20 @@ export function effectDevice(ins, { chainKey, onRemove, onMove, first, last }) {
   if (viz) {
     scr = screen(viz.w, viz.h, viz.label, (g, W, H, val) => {
       viz.paint(g, W, H, ins.params, liveState);
-      if (viz.live) val.textContent = `${liveState.gr > 0.05 ? '-' : ''}${liveState.gr.toFixed(1)} dB`;
+      if (viz.live && ins.type !== 'multiband') val.textContent = `${liveState.gr > 0.05 ? '-' : ''}${liveState.gr.toFixed(1)} dB`;
     });
     if (ins.type === 'eq') makeEqInteractive(scr, ins, refreshKnobs);
     if (viz.live) {
       liveViews.add({
         tick(engine) {
           if (!scr.el.isConnected) return;
+          if (ins.type === 'multiband') {
+            const b = engine.fx(chainKey, ins.id)?.bands?.() || [0, 0, 0];
+            const prev = liveState.bands || [0, 0, 0];
+            liveState.bands = b.map((x, i) => prev[i] * 0.6 + x * 0.4);
+            if (liveState.bands.some((x, i) => Math.abs(x - prev[i]) > 0.05)) scr.draw();
+            return;
+          }
           const gr = -(engine.reduction(chainKey, ins.id) || 0);
           const next = liveState.gr * 0.7 + Math.max(0, gr) * 0.3;
           if (Math.abs(next - liveState.gr) > 0.02 || (next > 0 && next < 0.05)) { liveState.gr = next < 0.02 ? 0 : next; scr.draw(); }
@@ -377,7 +461,7 @@ export function effectDevice(ins, { chainKey, onRemove, onMove, first, last }) {
     h('button.tbtn.ic', { onclick: onRemove, 'aria-label': `${def.name} verwijderen`, title: 'Verwijderen' }, icon('close', 13)),
   ];
   return frame({
-    title: def.name, info: def.info, on: ins.on, tools,
+    title: def.name, info: def.credit ? `${def.info} ${def.credit}.` : def.info, on: ins.on, tools,
     onPower: (on) => commit(() => { ins.on = on; }, 'params'),
     body: [
       scr || controls.length ? col(null, scr?.el, controls.length ? h('div.dev-col', { style: { gap: '6px' } }, controls) : null) : null,
@@ -636,22 +720,118 @@ export function samplerDevice(track, app) {
 
 export function audioDevice(track, app) {
   const clip = track.clips.find((c) => c.id === state.sel.clipId);
+  const spoor = col('Spoor',
+    h('p.hint', { style: { maxWidth: '220px' } }, 'Zet opname aan (●) en druk op opnemen om via de microfoon op te nemen. Of sleep een bestand of een geluid uit de browser op het spoor.'),
+    h('div', { style: { display: 'flex', gap: '6px' } },
+      h('button.btn.small', { onclick: () => app.pickAudio(track.id, null) }, 'Bestand kiezen…'),
+      h('button.btn.small', { onclick: () => app.openBrowser('sounds') }, 'Browser')));
+  if (!clip) {
+    return frame({ title: 'Audio', cls: 'instrument', info: 'Audiospoor: opnemen of bestanden plaatsen',
+      body: [spoor, col('Clip', h('p.hint', { style: { maxWidth: '220px' } }, 'Selecteer een audioclip om tempo, rekken, toonhoogte, volume en fades in te stellen.'))] });
+  }
+  const bpm = state.project.bpm;
+  const buf = app.buffers.get(clip.audioId);
   const beats = (v) => `${v.toFixed(2)} tel`;
-  const K = (label, key, min, max, step, format, def) => knob({ label, min, max, step, def, format, scope: 'clip', get: () => clip[key] ?? def, set: (v) => { clip[key] = v; } });
+  const K = (label, key, min, max, step, format, def, curve, set) => knob({ label, min, max, step, def, format, curve, scope: 'clip', get: () => clip[key] ?? def, set: set || ((v) => { clip[key] = v; }) });
+  // Tempo of rekken veranderen zonder dat het geluid in de clip verschuift: zonder loop rekt de clip mee.
+  const retime = (fn) => commit(() => {
+    const T0 = audioTimeRatio(clip, bpm);
+    fn();
+    const k = audioTimeRatio(clip, bpm) / T0;
+    if (!clip.loop && Number.isFinite(k) && Math.abs(k - 1) > 1e-6) { clip.length *= k; clip.fadeIn = (clip.fadeIn || 0) * k; clip.fadeOut = (clip.fadeOut || 0) * k; }
+  });
+
+  // Golfvorm van het hele bestand met het gespeelde deel en de tellen van het origineel.
+  const peaks = app.peaks.get(clip.audioId);
+  const scr = screen(300, 112, clip.name || 'Audio', (g, W, H, val) => {
+    gridLines(g, W, H, { ys: [H / 2] });
+    if (!peaks || !buf) return;
+    const dur = buf.duration;
+    const used = Math.min(dur, (clip.length * (60 / bpm)) / audioTimeRatio(clip, bpm));
+    const x0 = ((clip.offset || 0) / dur) * W, x1 = clip.loop ? W : Math.min(W, x0 + (used / dur) * W);
+    g.fillStyle = ACCENT_FILL;
+    g.fillRect(x0, 0, x1 - x0, H);
+    if (clip.warp && clip.srcBpm) {
+      const spbSrc = 60 / clip.srcBpm;
+      for (let b = 0; b * spbSrc < dur; b++) {
+        g.fillStyle = b % 4 === 0 ? GRID_STRONG : GRID;
+        g.fillRect(Math.round(((b * spbSrc) / dur) * W), 0, 1, H);
+      }
+    }
+    g.fillStyle = ORANGE;
+    for (let x = 0; x < W; x += 2) {
+      let i = Math.floor((x / W) * peaks.length);
+      if (clip.reverse) i = peaks.length - 1 - i;
+      const hh = Math.max(1, Math.min(1, peaks[i] * (clip.gain ?? 1)) * (H - 24));
+      g.globalAlpha = x >= x0 && x <= x1 ? 0.95 : 0.3;
+      g.fillRect(x, H / 2 - hh / 2 + 4, 1.4, hh);
+    }
+    g.globalAlpha = 1;
+    val.textContent = `${dur.toFixed(2)} s`;
+  });
+
+  const bpmIn = h('input.num-in', { type: 'number', min: 40, max: 250, step: 0.01, value: +(clip.srcBpm || bpm).toFixed(2), 'aria-label': 'Tempo van het origineel in BPM', title: 'Tempo waarop het bestand is opgenomen' });
+  bpmIn.addEventListener('change', () => { const v = clamp(+bpmIn.value || bpm, 40, 250); retime(() => { clip.srcBpm = v; clip.warp = true; }); });
+  const halve = h('button.tbtn', { title: 'Origineel tempo halveren (de clip gaat twee keer zo snel lopen)', onclick: () => retime(() => { clip.srcBpm = clamp(clip.srcBpm / 2, 40, 250); }) }, '÷2');
+  const double = h('button.tbtn', { title: 'Origineel tempo verdubbelen', onclick: () => retime(() => { clip.srcBpm = clamp(clip.srcBpm * 2, 40, 250); }) }, '×2');
+  const detect = h('button.btn.small', {
+    title: 'Tempo van het bestand bepalen uit de naam, de lengte van de loop of de aanslagen',
+    onclick: async () => {
+      if (!buf) return;
+      detect.disabled = true;
+      detect.textContent = 'Bezig…';
+      try {
+        const r = await analyseTempo(buf, clip.name);
+        if (r.bpm) { retime(() => { clip.srcBpm = r.bpm; clip.warp = true; if (r.loop) clip.loop = true; }); toast(`Tempo: ${r.bpm} BPM (${r.source === 'naam' ? 'uit de bestandsnaam' : r.source === 'loop' ? 'loop van een heel aantal maten' : 'uit de aanslagen'}).`, 3500); }
+        else toast('Geen duidelijk tempo gevonden. Typ het tempo zelf in.', 3500);
+      } finally { detect.disabled = false; detect.textContent = 'Bepalen'; }
+    },
+  }, 'Bepalen');
+
   return frame({
-    title: 'Audio', cls: 'instrument', info: 'Audiospoor: opnemen of bestanden plaatsen',
+    title: 'Audio', cls: 'instrument', info: 'Audioclip: tempo volgen, rekken, toonhoogte en fades',
+    lead: [h('span.dev-ctx-sm', {}, clip.name || 'audio')],
     body: [
-      col('Spoor',
-        h('p.hint', { style: { maxWidth: '260px' } }, 'Zet opname aan (●) en druk op opnemen om via de microfoon op te nemen. Of sleep een bestand of een geluid uit de browser op het spoor.'),
-        h('div', { style: { display: 'flex', gap: '6px' } },
-          h('button.btn.small', { onclick: () => app.pickAudio(track.id, null) }, 'Bestand kiezen…'),
-          h('button.btn.small', { onclick: () => app.openBrowser('sounds') }, 'Browser'))),
-      clip ? col(`Clip · ${clip.name || 'audio'}`, knobGrid(3, [
-        K('Volume', 'gain', 0, 2, 0.01, pct, 1),
-        K('Fade in', 'fadeIn', 0, Math.max(0.25, clip.length / 2), 0.01, beats, 0),
-        K('Fade uit', 'fadeOut', 0, Math.max(0.25, clip.length / 2), 0.01, beats, 0),
-      ])) : col('Clip', h('p.hint', { style: { maxWidth: '200px' } }, 'Selecteer een audioclip om volume en fades in te stellen.')),
+      col('Bestand', scr.el, h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } },
+        h('button.btn.small', { onclick: () => app.splitSelected(), title: 'Clip splitsen op de afspeelkop (Ctrl+E)' }, 'Splitsen'),
+        h('button.btn.small', { onclick: () => app.pickAudio(track.id, null) }, 'Ander bestand…'),
+        clip.warp ? h('button.btn.small', { title: 'Het projecttempo gelijk maken aan het tempo van deze clip', onclick: () => commit((p) => { p.bpm = clamp(Math.round(clip.srcBpm), 30, 300); }) }, 'Projecttempo overnemen') : null)),
+      col('Tempo',
+        fieldSm('Projecttempo volgen', pick([[true, 'Aan'], [false, 'Uit']], !!clip.warp, (v) => retime(() => { clip.warp = v; if (v && !clip.srcBpm) clip.srcBpm = bpm; }))),
+        fieldSm('Origineel tempo (BPM)', h('div.inline', {}, bpmIn, halve, double, detect)),
+        fieldSm('Rekmethode', pick([['beats', 'Ritmisch', 'Voor drums en ritmisch materiaal: aanslagen blijven strak'], ['tones', 'Tonaal', 'Voor zang, pads en akkoorden: glad, zonder stotteren'], ['repitch', 'Repitch', 'Als een draaitafel: sneller is hoger']], clip.mode, (v) => commit(() => { clip.mode = v; })))),
+      col('Toonhoogte en rekken', knobGrid(3, [
+        K('Transponeer', 'transpose', -24, 24, 1, st, 0),
+        K('Fijn', 'fine', -50, 50, 1, ct, 0),
+        K('Rek', 'stretch', 0.25, 4, 0.001, (v) => `${Math.round(v * 100)}%`, 1, 'exp', (v) => {
+          if (!clip.loop) { const k = v / (clip.stretch || 1); clip.length *= k; clip.fadeIn = (clip.fadeIn || 0) * k; clip.fadeOut = (clip.fadeOut || 0) * k; }
+          clip.stretch = v;
+        }),
+      ]), clip.mode === 'repitch' ? h('p.hint', { style: { maxWidth: '180px', fontSize: '11.5px' } }, 'Bij repitch hoort de toonhoogte bij de snelheid; transponeren werkt in Ritmisch en Tonaal.') : null),
+      col('Clip',
+        knobGrid(3, [
+          K('Volume', 'gain', 0, 2, 0.01, pct, 1),
+          K('Fade in', 'fadeIn', 0, Math.max(0.25, clip.length / 2), 0.01, beats, 0),
+          K('Fade uit', 'fadeOut', 0, Math.max(0.25, clip.length / 2), 0.01, beats, 0),
+        ]),
+        h('div', { style: { display: 'flex', gap: '10px' } },
+          fieldSm('Loop', pick([[true, 'Aan'], [false, 'Uit']], !!clip.loop, (v) => commit(() => { clip.loop = v; }))),
+          fieldSm('Omgekeerd', pick([[true, 'Aan'], [false, 'Uit']], !!clip.reverse, (v) => commit(() => { clip.reverse = v; }))))),
     ],
+  });
+}
+
+// ---------- Return-spoor ----------
+
+export function returnDevice(r) {
+  return frame({
+    title: `Return ${r.letter || ''} · ${r.name}`, cls: 'instrument', info: 'Sporen sturen hiernaartoe met de sends in de mixer; het resultaat gaat naar de master',
+    body: [col('Uitgang',
+      knobGrid(2, [
+        knob({ label: 'Volume', min: -60, max: 6, step: 0.5, def: 0, size: 50, get: () => r.volume, set: (v) => { r.volume = v; }, format: (v) => (v <= -60 ? '-∞' : `${v.toFixed(1)}dB`) }),
+        knob({ label: 'Pan', min: -1, max: 1, step: 0.01, def: 0, size: 50, get: () => r.pan, set: (v) => { r.pan = v; }, format: (v) => (Math.abs(v) < 0.01 ? 'C' : v < 0 ? `L${Math.round(-v * 100)}` : `R${Math.round(v * 100)}`) }),
+      ]),
+      h('p.hint', { style: { maxWidth: '190px' } }, 'Effecten op een return staan meestal op 100% nat; de sends op de sporen bepalen hoeveel er van elk spoor in komt.'))],
   });
 }
 

@@ -10,12 +10,15 @@ Een all-in-one DAW (digital audio workstation) in de browser: componeren, opneme
 - **Drumcomputer** met vier kits (Analoog 808, Analoog 909, Akoestisch, Lo-fi tape) en twaalf geluiden: kick, snare, clap, rimshot, open en dichte hihat, shaker, cowbell, twee toms, crash en ride. Per pad stel je volume, stemming en lengte in, en elke pad kan een eigen sample krijgen. De dichte hihat smoort de open hihat.
 - **Sampler**: speelt elk sample chromatisch af, met grondtoon, fijnstemming, beginpunt, loop, ADSR en filter.
 - **Bibliotheek** met 25 ingebouwde geluiden die in de browser worden gemaakt (vrij te gebruiken): drumloops in het tempo van je project (house, techno, hiphop, trap, breakbeat, lo-fi), instrumenten voor de sampler (piano, gitaarsnaar, strijkers, koor, kalimba, klokje, orgel, 808-bas), akkoorden en effecten (impact, riser, downlifter, sub drop, ruissweep, omgekeerde crash, laser, vinylkraak).
-- **Effectenrack** per spoor en op de master, met 13 ingebouwde effecten: EQ, compressor, verzadiging, lo-fi, chorus, phaser, delay (ook pingpong), galm, autofilter, tremolo/autopan, pomp (sidechain), stereobreedte en limiter. Effecten zet je aan of uit, verplaats je en verwijder je.
-- **Mixer** met volume, pan, mute, solo en meters. Op de master staan standaard een lijmcompressor en een limiter.
+- **Tijdrekken (warp)**: audioclips volgen het projecttempo zonder dat de toonhoogte verandert. Het tempo van een bestand wordt herkend uit de naam ("124 BPM"), uit de lengte van een loop of uit de aanslagen. Drie rekmethodes: Ritmisch (WSOLA, strakke aanslagen), Tonaal (phase vocoder met fasevergrendeling) en Repitch (als een draaitafel). Rekenwerk in een Web Worker.
+- **Slepen**: de rechterrand maakt een clip langer of korter (met loop herhaalt het geluid), de linkerrand kort het begin in, en het hoekje rechtsonder (of Alt + rechterrand) rekt het geluid of de noten mee. Verder transponeren (±24 halve tonen en fijn), omkeren, loop, splitsen op de afspeelkop (Ctrl+E).
+- **Effectenrack** per spoor, per return en op de master, met 22 effecten in zes groepen: EQ, autofilter, compressor, multiband (driebands, Linkwitz-Riley), limiter, maximizer (lookahead), gate, transiëntvormer, de-esser, verzadiging, tape (wow, flutter, kop-bump), lo-fi, chorus, ensemble (BBD), phaser, tremolo/autopan, stereobreedte, galm, delay, pomp, en twee vrije klassiekers: **Freeverb** (algoritme van Jezar, publiek domein) en **Plaatgalm 97** (naar het ontwerp van Jon Dattorro, 1997). De studio-effecten draaien als AudioWorklet.
+- **Mixer** met volume, pan, mute, solo, meters, **sends naar return-sporen** (standaard A · Galm en B · Echo, zelf uit te breiden) en een **luidheidsmeter** volgens EBU R128 (momentaan, korte termijn, geïntegreerd in LUFS), piek en stereocorrelatie. Op de master staan standaard een lijmcompressor en een limiter.
+- **Naar audio** (bouncen): een spoor met zijn effecten en sends omzetten naar een audiospoor.
 - **Opnemen**: noten via het computertoetsenbord of een MIDI-keyboard, en audio via de microfoon.
 - **Audio importeren** door een bestand op een audiospoor te slepen.
 - **Transport**: loop (slepen in de liniaal), metronoom, tempo, ongedaan maken en opnieuw.
-- **Exporteren** van het hele nummer als WAV (44,1 kHz, 16 bit).
+- **Exporteren** van de mix of van stems (elk spoor apart, samen in een zip) als WAV, 16 bit (met dither) of 24 bit, 44,1 of 48 kHz. Na afloop zie je de luidheid in LUFS en de piek.
 - **Projecten** worden automatisch opgeslagen in IndexedDB.
 
 ## Interface

@@ -56,7 +56,10 @@ export const PLUGIN_DEFS = {
   },
   reverb: {
     name: 'Galm', info: 'Ruimte, van kleine kamer tot grote hal.',
-    params: { size: sec('Galmtijd', 2.5, 0.3, 10), predelay: sec('Predelay', 0.02, 0, 0.2, null), damping: pct('Demping', 0.5), mix: pct('Hoeveelheid', 0.3) },
+    params: {
+      type: { label: 'Ruimte', def: 'zaal', type: 'select', options: [['kamer', 'Kamer'], ['zaal', 'Zaal'], ['plaat', 'Plaat'], ['kerk', 'Kerk']] },
+      size: sec('Galmtijd', 2.5, 0.3, 10), predelay: sec('Predelay', 0.02, 0, 0.2, null), damping: pct('Demping', 0.5), mix: pct('Hoeveelheid', 0.3),
+    },
   },
   autofilter: {
     name: 'Autofilter', info: 'Filter dat op het tempo meebeweegt.',
@@ -84,6 +87,57 @@ export const PLUGIN_DEFS = {
     name: 'Limiter', info: 'Harde grens, zodat niets boven het plafond uitkomt.',
     params: { gain: db('Versterking', 0, 0, 18), ceiling: db('Plafond', -1, -12, 0) },
   },
+};
+
+// Kant-en-klare instellingen per effect, als startpunt.
+export const PLUGIN_PRESETS = {
+  eq: {
+    'Warm': { lowCut: 30, lowFreq: 150, low: 2.5, midFreq: 2800, mid: -1.5, midQ: 0.8, highFreq: 9000, high: -2 },
+    'Helder en open': { lowCut: 40, lowFreq: 120, low: 0, midFreq: 400, mid: -2, midQ: 1, highFreq: 8000, high: 4 },
+    'Modder eruit': { lowCut: 90, lowFreq: 120, low: 0, midFreq: 320, mid: -4, midQ: 1.4, highFreq: 6000, high: 0 },
+    'Telefoon': { lowCut: 400, lowFreq: 120, low: -6, midFreq: 1800, mid: 6, midQ: 1.2, highFreq: 4000, high: -15 },
+    'Bas met punch': { lowCut: 30, lowFreq: 70, low: 4, midFreq: 700, mid: 2, midQ: 1.2, highFreq: 5000, high: -1 },
+  },
+  comp: {
+    'Zachte lijm': { threshold: -14, ratio: 2, attack: 0.03, release: 0.25, makeup: 1.5 },
+    'Drumbus': { threshold: -18, ratio: 4, attack: 0.01, release: 0.12, makeup: 4 },
+    'Vocaal': { threshold: -20, ratio: 3, attack: 0.005, release: 0.15, makeup: 4 },
+    'Plat en luid': { threshold: -30, ratio: 10, attack: 0.002, release: 0.08, makeup: 10 },
+  },
+  sat: {
+    'Bandwarmte': { drive: 6, tone: 12000, mix: 0.6, output: -1 },
+    'Buis': { drive: 14, tone: 9000, mix: 0.8, output: -4 },
+    'Grof': { drive: 30, tone: 6000, mix: 1, output: -9 },
+  },
+  lofi: {
+    'Cassette': { bits: 12, tone: 7000, noise: 0.2, mix: 0.8 },
+    '8-bit': { bits: 5, tone: 9000, noise: 0, mix: 1 },
+    'Oude radio': { bits: 8, tone: 2800, noise: 0.35, mix: 1 },
+  },
+  chorus: { 'Breed': { rate: 0.4, depth: 0.7, mix: 0.5 }, 'Licht': { rate: 0.9, depth: 0.3, mix: 0.3 }, 'Zeeziek': { rate: 3.5, depth: 1, mix: 0.6 } },
+  phaser: { 'Langzaam': { rate: 0.15, depth: 0.8, feedback: 0.5, mix: 0.5 }, 'Snel': { rate: 2.5, depth: 0.6, feedback: 0.7, mix: 0.5 } },
+  delay: {
+    'Kwartnoot': { time: 1, feedback: 0.35, tone: 5000, pingpong: false, mix: 0.25 },
+    'Gestippelde 1/8 pingpong': { time: 0.75, feedback: 0.45, tone: 4500, pingpong: true, mix: 0.3 },
+    'Slapback': { time: 0.25, feedback: 0.05, tone: 7000, pingpong: false, mix: 0.3 },
+    'Dub': { time: 1.5, feedback: 0.7, tone: 1800, pingpong: true, mix: 0.4 },
+  },
+  reverb: {
+    'Kleine kamer': { type: 'kamer', size: 0.7, predelay: 0.005, damping: 0.6, mix: 0.2 },
+    'Concertzaal': { type: 'zaal', size: 2.6, predelay: 0.025, damping: 0.45, mix: 0.28 },
+    'Plaat voor zang': { type: 'plaat', size: 1.8, predelay: 0.02, damping: 0.25, mix: 0.25 },
+    'Kathedraal': { type: 'kerk', size: 7, predelay: 0.06, damping: 0.55, mix: 0.35 },
+    'Ambient': { type: 'zaal', size: 9, predelay: 0.08, damping: 0.3, mix: 0.5 },
+  },
+  autofilter: {
+    'Langzame sweep': { type: 'lowpass', cutoff: 900, reso: 6, rate: 8, depth: 0.8 },
+    'Wah op de tel': { type: 'bandpass', cutoff: 1200, reso: 6, rate: 1, depth: 0.7 },
+    'Hoogdoorlaat-opbouw': { type: 'highpass', cutoff: 300, reso: 3, rate: 8, depth: 0.6 },
+  },
+  tremolo: { 'Autopan breed': { mode: 'pan', rate: 2, depth: 0.8 }, 'Vintage tremolo': { mode: 'amp', rate: 0.5, depth: 0.5 } },
+  pump: { 'Klassiek': { amount: 0.7, rate: 1, release: 0.6 }, 'Zacht': { amount: 0.4, rate: 1, release: 0.8 }, 'Achtsten': { amount: 0.5, rate: 0.5, release: 0.7 } },
+  width: { 'Mono': { width: 0 }, 'Breed': { width: 1.5 }, 'Extra breed': { width: 1.9 } },
+  limiter: { 'Transparant': { gain: 0, ceiling: -1 }, 'Luid': { gain: 6, ceiling: -0.5 }, 'Streaming': { gain: 2, ceiling: -1 } },
 };
 
 let n = 0;

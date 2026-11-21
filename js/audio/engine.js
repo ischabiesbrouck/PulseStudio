@@ -2,14 +2,35 @@
 import { TrackChain, masterTrack, readPeak } from './chain.js';
 import { synthVoice, samplerVoice, drumHit } from './instruments.js';
 import { eventsInRange, audioStartsInRange, nextSegment, isAudible, projectEnd, audioGainEnvelope } from '../model.js';
+import { getInstrument, loadInstrument, pickZone, loadKit, isSampleKit } from './samplelib.js';
 
 const LOOKAHEAD = 0.15; // seconden vooruit plannen
 const STEP = 0.5;       // tellen per planstap
 
+// Welke opname de sampler voor deze noot gebruikt: een eigen sample, of de dichtstbijzijnde van een ingebouwd instrument.
+export function samplerZone(s, pitch, buffers) {
+  if (s.instrument) {
+    const zones = getInstrument(s.instrument);
+    if (!zones) { loadInstrument(s.instrument).catch(() => {}); return null; }
+    return { ...pickZone(zones, pitch), builtin: true };
+  }
+  return { buffer: buffers.get(s.audioId), root: s.root };
+}
+
+// Laadt alle opnames die een project nodig heeft (voor exporteren en vooraf laden).
+export function preloadProject(project, onProgress) {
+  const jobs = [];
+  for (const t of project.tracks) {
+    if (t.kind === 'drums' && isSampleKit(t.drums.kit)) jobs.push(loadKit(t.drums.kit, onProgress));
+    if (t.kind === 'sampler' && t.sampler.instrument) jobs.push(loadInstrument(t.sampler.instrument, onProgress));
+  }
+  return Promise.allSettled(jobs);
+}
+
 function playEvent(ctx, chain, track, pitch, vel, time, durSec, buffers) {
   if (track.kind === 'drums') return drumHit(ctx, chain.input, track.drums, pitch, vel, time, { buffers, choke: chain.choke });
   const v = track.kind === 'sampler'
-    ? samplerVoice(ctx, chain.input, track.sampler, buffers.get(track.sampler.audioId), pitch, vel, time)
+    ? samplerVoice(ctx, chain.input, track.sampler, samplerZone(track.sampler, pitch, buffers), pitch, vel, time)
     : synthVoice(ctx, chain.input, track.synth, pitch, vel, time);
   if (durSec != null) v.release(time + durSec);
   return v;
@@ -203,6 +224,15 @@ export class Engine {
     for (const p of [pitch, pitch + 4, pitch + 7]) synthVoice(this.ctx, this.master.input, params, p, 0.75, this.ctx.currentTime + 0.02).release(this.ctx.currentTime + 0.7);
   }
 
+  // Speelt een kort akkoordje op een ingebouwd instrument.
+  previewInstrument(id, zones) {
+    const s = { fine: 0, attack: 0.003, decay: 1, sustain: 1, release: 0.4, cutoff: 18000, gain: 0.8 };
+    const t = this.ctx.currentTime + 0.02;
+    [[60, 0], [64, 0.05], [67, 0.1], [72, 0.15]].forEach(([p, dt]) => {
+      samplerVoice(this.ctx, this.master.input, s, { ...pickZone(zones, p), builtin: true }, p, 0.75, t + dt).release(t + 1.6);
+    });
+  }
+
   previewKit(kit) {
     const t = this.ctx.currentTime + 0.03;
     const choke = {};
@@ -235,6 +265,7 @@ export class Engine {
 export async function renderProject(project, buffers, { sampleRate = 44100, tail = 3 } = {}) {
   const end = projectEnd(project);
   if (end <= 0) throw new Error('Het project is leeg.');
+  await preloadProject(project);
   const spb = 60 / project.bpm;
   const ctx = new OfflineAudioContext(2, Math.ceil((end * spb + tail) * sampleRate), sampleRate);
   const master = new TrackChain(ctx, ctx.destination);

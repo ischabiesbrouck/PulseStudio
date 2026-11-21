@@ -4,10 +4,12 @@ import { SYNTH_PRESETS, noteName } from '../model.js';
 import { PLUGIN_DEFS } from '../audio/plugin-defs.js';
 import { DRUM_KITS } from '../audio/instruments.js';
 import { LIBRARY, LIBRARY_CATS } from '../audio/library.js';
+import { INSTRUMENTS } from '../audio/samplelib.js';
+import { DRUM_PATTERNS, MELODIC_PATTERNS } from '../audio/patterns.js';
 import { h, icon } from './dom.js';
 
 const PULSE = 'application/x-pulse';
-const TABS = [['sounds', 'Geluiden'], ['instruments', 'Instrumenten'], ['fx', 'Effecten']];
+const TABS = [['sounds', 'Geluiden'], ['patterns', 'Patronen'], ['instruments', 'Instrumenten'], ['fx', 'Effecten']];
 
 export function createBrowser(app) {
   let tab = 'sounds';
@@ -25,15 +27,31 @@ export function createBrowser(app) {
     if (tab === 'sounds') {
       return LIBRARY_CATS.map((cat) => [cat, LIBRARY.filter((i) => i.cat === cat).map((i) => ({
         kind: 'sound', id: i.id, name: i.name, icon: cat === 'Drumloops' ? 'drum' : cat === 'Effecten' ? 'fx' : 'wave',
-        meta: i.root != null ? noteName(i.root) : cat === 'Drumloops' ? `${state.project.bpm}` : `${i.length(state.project.bpm).toFixed(1)}s`,
+        meta: i.root != null ? noteName(i.root) : cat === 'Melodische loops' ? i.role : cat === 'Drumloops' ? `${state.project.bpm}` : `${i.length(state.project.bpm).toFixed(1)}s`,
         tip: `${i.name}: sleep naar een spoor, dubbelklik voor een clip op de afspeelkop${i.root != null ? ', of + voor een samplerspoor' : ''}`,
         sampler: i.root != null,
       }))]);
     }
+    if (tab === 'patterns') {
+      const melodic = {};
+      for (const p of MELODIC_PATTERNS) (melodic[p.role] ||= []).push({
+        kind: 'pattern', id: p.id, name: p.name, icon: 'note', meta: p.instrument ? INSTRUMENTS[p.instrument].name.split(' (')[0] : p.preset,
+        tip: `${p.name}: bewerkbare noten in A mineur. Sleep op een spoor, of naar een leeg spoor voor een nieuw spoor met ${p.instrument ? INSTRUMENTS[p.instrument].name : p.preset}.`,
+      });
+      return [
+        ['Drumgrooves', DRUM_PATTERNS.map((p) => ({ kind: 'pattern', id: p.id, name: p.name, icon: 'drum', meta: `${p.bpm}`, tip: `${p.name}: bewerkbare drumclip (${DRUM_KITS[p.kit].name}). Sleep op een drumspoor of naar een leeg spoor.` }))],
+        ...Object.entries(melodic).map(([role, items]) => [role, items]),
+      ];
+    }
     if (tab === 'instruments') {
       const cats = {};
-      for (const [n, d] of Object.entries(SYNTH_PRESETS)) (cats[`Synth: ${d.cat}`] ||= []).push({ kind: 'preset', id: n, name: n, icon: 'note', meta: 'Synth', tip: `Synthpreset ${n}: sleep op een synthspoor of naar een leeg spoor` });
-      return [['Drumkits', Object.entries(DRUM_KITS).map(([id, d]) => ({ kind: 'kit', id, name: d.name, icon: 'drum', meta: 'Kit', tip: `${d.name}: sleep op een drumspoor of naar een leeg spoor` }))], ...Object.entries(cats)];
+      for (const [id, d] of Object.entries(INSTRUMENTS)) (cats[`Opnames: ${d.cat}`] ||= []).push({ kind: 'instrument', id, name: d.name, icon: 'sampler', meta: '', tip: `${d.name}: echte opnames (${d.source === 'salamander' ? 'Salamander Grand Piano' : 'FluidR3'}). Sleep op een samplerspoor of naar een leeg spoor.` });
+      const synth = {};
+      for (const [n, d] of Object.entries(SYNTH_PRESETS)) (synth[`Synth: ${d.cat}`] ||= []).push({ kind: 'preset', id: n, name: n, icon: 'note', meta: 'Synth', tip: `Synthpreset ${n}: sleep op een synthspoor of naar een leeg spoor` });
+      return [
+        ['Drumkits', Object.entries(DRUM_KITS).map(([id, d]) => ({ kind: 'kit', id, name: d.name, icon: 'drum', meta: d.sampled ? 'Opnames' : 'Kit', tip: `${d.name}: sleep op een drumspoor of naar een leeg spoor` }))],
+        ...Object.entries(cats), ...Object.entries(synth),
+      ];
     }
     return [['Effecten', Object.entries(PLUGIN_DEFS).map(([id, d]) => ({ kind: 'fx', id, name: d.name, icon: 'dial', meta: '', tip: `${d.name}: ${d.info} Sleep op een spoor of in de keten.` }))]];
   }

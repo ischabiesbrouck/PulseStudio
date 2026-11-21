@@ -98,9 +98,10 @@ export function defaultSynth(preset = 'Lead') {
   return { preset: name, ...BASE_SYNTH, ...params };
 }
 export const defaultDrums = (kit = '808') => ({ kit, tune: 0, decay: 1, level: 0.9, pads: {} });
-export const defaultSampler = () => ({
-  audioId: null, sampleName: '', root: 60, fine: 0, start: 0, loop: false, loopStart: 0.3, loopEnd: 0.9,
-  attack: 0.003, decay: 0.5, sustain: 1, release: 0.3, cutoff: 18000, gain: 0.8,
+// `instrument`: een ingebouwd instrument met echte opnames (zie audio/samplelib.js); anders een eigen sample (`audioId`).
+export const defaultSampler = (instrument = null) => ({
+  instrument, audioId: null, sampleName: '', root: 60, fine: 0, start: 0, loop: false, loopStart: 0.3, loopEnd: 0.9,
+  attack: 0.003, decay: 0.5, sustain: 1, release: instrument ? 0.5 : 0.3, cutoff: 18000, gain: 0.8,
 });
 
 export const KIND_NAMES = { synth: 'Synth', drums: 'Drums', sampler: 'Sampler', audio: 'Audio' };
@@ -280,12 +281,14 @@ export function demoProject() {
   });
   bass.clips.push(bassline);
 
-  const pad = createTrack('synth', 2, 'Akkoorden');
-  pad.synth = defaultSynth('Warme pad');
-  pad.inserts = [createInsert('chorus', { mix: 0.35 }), createInsert('pump', { amount: 0.75 }), createInsert('reverb', { size: 3.5, mix: 0.3 })];
-  const chords = createClip('synth', 0, 32, { pattern: 16, name: 'Akkoorden' });
-  const voicings = [[57, 60, 64], [53, 57, 60], [55, 60, 64], [55, 59, 62]];
-  voicings.forEach((v, bar) => v.forEach((pitch) => chords.notes.push({ t: bar * 4, d: 3.9, p: pitch, v: 0.7 })));
+  const pad = createTrack('sampler', 2, 'Akkoorden');
+  pad.sampler = defaultSampler('epiano');
+  pad.inserts = [createInsert('chorus', { mix: 0.3 }), createInsert('pump', { amount: 0.55 }), createInsert('reverb', { size: 2.8, mix: 0.25 })];
+  const chords = createClip('sampler', 0, 32, { pattern: 16, name: 'Akkoorden' });
+  const voicings = [[57, 60, 64, 67], [53, 57, 60, 64], [55, 60, 64, 67], [55, 59, 62, 67]];
+  voicings.forEach((v, bar) => {
+    for (const [t, d, vel] of [[0, 1.4, 0.72], [1.5, 0.9, 0.55], [2.5, 1.4, 0.66]]) v.forEach((pitch) => chords.notes.push({ t: bar * 4 + t, d, p: pitch, v: vel }));
+  });
   pad.clips.push(chords);
 
   const lead = createTrack('synth', 3, 'Melodie');

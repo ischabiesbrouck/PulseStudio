@@ -1,8 +1,10 @@
-// Ingebouwde samplebibliotheek. Alle geluiden worden in de browser gegenereerd (OfflineAudioContext),
-// dus er zitten geen bestanden van anderen in. Drumloops worden in het tempo van het project gemaakt.
-import { synthVoice, drumHit } from './instruments.js';
+// Ingebouwde geluidenbibliotheek, gerenderd in de browser (OfflineAudioContext) in het tempo van het project.
+// Loops gebruiken de patronen uit patterns.js en, waar mogelijk, echte opnames uit samplelib.js.
+import { synthVoice, samplerVoice, drumHit } from './instruments.js';
 import { IMPL, noiseBuffer } from './plugins.js';
-import { defaultSynth, defaultDrums, midiToFreq } from '../model.js';
+import { defaultSynth, defaultDrums, defaultSampler, midiToFreq } from '../model.js';
+import { DRUM_PATTERNS, MELODIC_PATTERNS, drumNotes, melodicNotes } from './patterns.js';
+import { getInstrument, loadInstrument, pickZone, loadKit, isSampleKit } from './samplelib.js';
 
 const barsSec = (bpm, n) => (n * 4 * 60) / bpm;
 const direct = (p, v) => { p.value = v; };
@@ -98,72 +100,56 @@ function vinylBuffer(ctx, seconds) {
   return buf;
 }
 
-// Drumpatronen per zestiende, voor één maat; `x` = hard, `o` = zacht.
-function drumLoop(ctx, dest, bpm, kit, rows, { swing = 0, bars = 2, rolls = [] } = {}) {
+// Drumloop uit een patroon, gespeeld met de kit van dat patroon (echte opnames waar die er zijn).
+function patternDrumLoop(ctx, dest, bpm, pat) {
   const spb = 60 / bpm;
-  const k = defaultDrums(kit);
+  const k = defaultDrums(pat.kit);
   const choke = {};
   const bus = ctx.createGain();
   const comp = IMPL.comp(ctx);
-  comp.update({ threshold: -14, ratio: 3, attack: 0.01, release: 0.12, makeup: 2 }, bpm, direct);
+  comp.update({ threshold: -16, ratio: 3, attack: 0.012, release: 0.12, makeup: 3 }, bpm, direct);
   bus.connect(comp.input);
   comp.output.connect(dest);
-  for (let bar = 0; bar < bars; bar++) {
-    for (const [pitch, pat] of Object.entries(rows)) {
-      [...pat].forEach((ch, i) => {
-        if (ch === '.') return;
-        const beat = bar * 4 + i / 4 + (i % 2 ? swing * 0.25 : 0);
-        drumHit(ctx, bus, k, +pitch, ch === 'x' ? 0.95 : 0.55, beat * spb, { choke });
-      });
-    }
-    for (const [step, pitch, count] of rolls) {
-      for (let r = 0; r < count; r++) drumHit(ctx, bus, k, pitch, 0.4 + 0.4 * (r / count), (bar * 4 + step / 4 + r * (0.25 / count)) * spb, { choke });
-    }
+  for (const n of drumNotes(pat).notes) drumHit(ctx, bus, k, n.p, n.v, n.t * spb, { choke });
+}
+
+// Melodische loop: met een ingebouwd instrument (echte opnames) of met een synthpreset.
+function patternMelodicLoop(ctx, dest, bpm, pat) {
+  const spb = 60 / bpm;
+  const out = reverbSend(ctx, dest, 2.2, 0.18);
+  const { notes } = melodicNotes(pat);
+  if (pat.instrument) {
+    const zones = getInstrument(pat.instrument);
+    const s = defaultSampler(pat.instrument);
+    for (const n of notes) samplerVoice(ctx, out, s, { ...pickZone(zones, n.p), builtin: true }, n.p, n.v, n.t * spb).release((n.t + n.d) * spb);
+  } else {
+    for (const n of notes) note(ctx, out, pat.preset, n.p, n.v, n.t * spb, n.d * spb);
   }
 }
 
-export const LIBRARY = [
-  // ---------- Drumloops ----------
-  { id: 'loop-house', cat: 'Drumloops', name: 'House (909)', length: (bpm) => barsSec(bpm, 2),
-    render: (ctx, d, bpm) => drumLoop(ctx, d, bpm, '909', { 36: 'x...x...x...x...', 39: '....x.......x...', 42: '..x...x...x...o.', 46: '..............x.', 70: 'o.o.o.o.o.o.o.o.' }) },
-  { id: 'loop-techno', cat: 'Drumloops', name: 'Techno (909)', length: (bpm) => barsSec(bpm, 2),
-    render: (ctx, d, bpm) => drumLoop(ctx, d, bpm, '909', { 36: 'x...x...x...x...', 46: '..x...x...x...x.', 37: '...o..o....o..o.', 51: 'o.o.o.o.o.o.o.o.', 39: '....o.......o...' }) },
-  { id: 'loop-hiphop', cat: 'Drumloops', name: 'Hiphop (akoestisch)', length: (bpm) => barsSec(bpm, 2),
-    render: (ctx, d, bpm) => drumLoop(ctx, d, bpm, 'Akoestisch', { 36: 'x......x..x.....', 38: '....x.......x...', 42: 'x.o.x.o.x.o.x.oo' }, { swing: 0.16 }) },
-  { id: 'loop-trap', cat: 'Drumloops', name: 'Trap (808)', length: (bpm) => barsSec(bpm, 2),
-    render: (ctx, d, bpm) => drumLoop(ctx, d, bpm, '808', { 36: 'x.....x...x.....', 38: '........x.......', 39: '........o.......', 42: 'x.o.x.o.x.o.x...' }, { rolls: [[12, 42, 6], [14, 42, 3]] }) },
-  { id: 'loop-break', cat: 'Drumloops', name: 'Breakbeat', length: (bpm) => barsSec(bpm, 2),
-    render: (ctx, d, bpm) => drumLoop(ctx, d, bpm, 'Akoestisch', { 36: 'x.x.......x.....', 38: '....x..o.o..x..o', 51: 'x.x.x.x.x.x.x.x.' }) },
-  { id: 'loop-lofi', cat: 'Drumloops', name: 'Lo-fi', length: (bpm) => barsSec(bpm, 2),
-    render: (ctx, d, bpm) => drumLoop(ctx, d, bpm, 'Lo-fi', { 36: 'x.....x..x......', 38: '....x.......x...', 42: 'x.oox.o.x.oox.o.', 70: '..o...o...o...o.' }, { swing: 0.22 }) },
+const KIT_LABEL = { 909: '909', 808: '808', Studio: 'studio', Kamer: 'jazzkit', Cassette: 'cassette' };
+const PATTERN_LOOPS = [
+  ...DRUM_PATTERNS.map((p) => ({
+    id: `loop-${p.id}`, cat: 'Drumloops', name: `${p.name} (${KIT_LABEL[p.kit] || p.kit})`, kit: p.kit,
+    prepare: () => (isSampleKit(p.kit) ? loadKit(p.kit) : null),
+    length: (bpm) => barsSec(bpm, drumNotes(p).length / 4),
+    render: (ctx, d, bpm) => patternDrumLoop(ctx, d, bpm, p),
+  })),
+  ...MELODIC_PATTERNS.map((p) => ({
+    id: `loop-${p.id}`, cat: 'Melodische loops', name: p.name, role: p.role,
+    prepare: () => (p.instrument ? loadInstrument(p.instrument) : null),
+    length: (bpm) => barsSec(bpm, melodicNotes(p).length / 4),
+    render: (ctx, d, bpm) => patternMelodicLoop(ctx, d, bpm, p),
+  })),
+];
 
-  // ---------- Instrumenten (voor de sampler) ----------
-  { id: 'inst-piano', cat: 'Instrumenten', name: 'Piano', root: 60, length: () => 4,
-    render: (ctx, d) => pianoNote(ctx, reverbSend(ctx, d, 1.6, 0.15), 60, 0.85, 0, 4) },
-  { id: 'inst-guitar', cat: 'Instrumenten', name: 'Gitaarsnaar', root: 48, length: () => 3,
+export const LIBRARY = [
+  ...PATTERN_LOOPS,
+
+  // ---------- One-shots ----------
+  { id: 'inst-guitar', cat: 'One-shots', name: 'Gitaarsnaar (gesynthetiseerd)', root: 48, length: () => 3,
     render: (ctx, d) => { const s = ctx.createBufferSource(); s.buffer = pluckBuffer(ctx, midiToFreq(48), 3); s.connect(filt(ctx, 'lowpass', 6000)).connect(d); s.start(0); } },
-  { id: 'inst-strings', cat: 'Instrumenten', name: 'Strijkers', root: 48, loop: [0.35, 0.8], length: () => 3.5,
-    render: (ctx, d) => note(ctx, reverbSend(ctx, d, 2.5, 0.25), 'Strijkers', 48, 0.8, 0, 3) },
-  { id: 'inst-choir', cat: 'Instrumenten', name: 'Koor "aah"', root: 57, loop: [0.35, 0.8], length: () => 3.5,
-    render: (ctx, d) => {
-      const out = reverbSend(ctx, d, 3, 0.3);
-      const bus = ctx.createGain();
-      bus.gain.value = 1.4;
-      for (const [f, q, g] of [[750, 6, 1], [1150, 8, 0.5], [2700, 10, 0.25], [3300, 12, 0.12]]) {
-        const bp = filt(ctx, 'bandpass', f, q);
-        const gg = ctx.createGain();
-        gg.gain.value = g;
-        bus.connect(bp).connect(gg).connect(out);
-      }
-      note(ctx, bus, 'Strijkers', 57, 0.8, 0, 3, { unison: 5, uniDetune: 22, mix: 0, cutoff: 9000, envAmt: 0, attack: 0.35, lfoAmount: 0.18, lfoRate: 5 });
-    } },
-  { id: 'inst-kalimba', cat: 'Instrumenten', name: 'Kalimba', root: 72, length: () => 2.5,
-    render: (ctx, d) => note(ctx, reverbSend(ctx, d, 1.5, 0.2), 'Kalimba', 72, 0.9, 0, 1.2) },
-  { id: 'inst-bell', cat: 'Instrumenten', name: 'Klokje', root: 72, length: () => 4,
-    render: (ctx, d) => note(ctx, reverbSend(ctx, d, 3, 0.3), 'Klok', 72, 0.9, 0, 2.2) },
-  { id: 'inst-organ', cat: 'Instrumenten', name: 'Orgel', root: 60, loop: [0.2, 0.8], length: () => 2.5,
-    render: (ctx, d) => note(ctx, d, 'Orgel', 60, 0.85, 0, 2.3) },
-  { id: 'inst-808', cat: 'Instrumenten', name: '808-bas', root: 36, length: () => 2.5,
+  { id: 'inst-808', cat: 'One-shots', name: '808-bas', root: 36, length: () => 2.5,
     render: (ctx, d) => {
       const o = ctx.createOscillator();
       o.frequency.setValueAtTime(midiToFreq(43), 0);
@@ -181,8 +167,20 @@ export const LIBRARY = [
     } },
 
   // ---------- Akkoorden ----------
-  { id: 'chord-piano', cat: 'Akkoorden', name: 'Piano-akkoord (Cm7)', root: 60, length: () => 3,
-    render: (ctx, d) => { const out = reverbSend(ctx, d, 1.8, 0.2); for (const p of [48, 60, 63, 67, 70]) pianoNote(ctx, out, p, 0.75, 0, 3); } },
+  { id: 'chord-piano', cat: 'Akkoorden', name: 'Vleugel-akkoord (Cm7)', root: 60, length: () => 4, prepare: () => loadInstrument('piano'),
+    render: (ctx, d) => {
+      const out = reverbSend(ctx, d, 1.8, 0.18);
+      const zones = getInstrument('piano');
+      const s = defaultSampler('piano');
+      [48, 60, 63, 67, 70].forEach((p, i) => samplerVoice(ctx, out, s, { ...pickZone(zones, p), builtin: true }, p, 0.7, i * 0.012).release(3.4));
+    } },
+  { id: 'chord-rhodes', cat: 'Akkoorden', name: 'Rhodes-akkoord (Am9)', root: 57, length: () => 3.5, prepare: () => loadInstrument('epiano'),
+    render: (ctx, d) => {
+      const out = reverbSend(ctx, d, 1.6, 0.16);
+      const zones = getInstrument('epiano');
+      const s = defaultSampler('epiano');
+      [45, 55, 59, 60, 64].forEach((p, i) => samplerVoice(ctx, out, s, { ...pickZone(zones, p), builtin: true }, p, 0.65, i * 0.01).release(2.8));
+    } },
   { id: 'chord-stab', cat: 'Akkoorden', name: 'Stab (Cm)', root: 60, length: () => 1.5,
     render: (ctx, d) => { const out = reverbSend(ctx, d, 1.5, 0.25); for (const p of [60, 63, 67, 72]) note(ctx, out, 'Stab', p, 0.9, 0, 0.3); } },
   { id: 'chord-pad', cat: 'Akkoorden', name: 'Pad-akkoord (Am9)', root: 57, length: (bpm) => barsSec(bpm, 2) + 2,
@@ -295,9 +293,10 @@ export const LIBRARY = [
     render: (ctx, d, bpm) => { const s = ctx.createBufferSource(); s.buffer = vinylBuffer(ctx, barsSec(bpm, 2)); s.connect(d); s.start(0); } },
 ];
 
-export const LIBRARY_CATS = ['Drumloops', 'Instrumenten', 'Akkoorden', 'Effecten'];
+export const LIBRARY_CATS = ['Drumloops', 'Melodische loops', 'Akkoorden', 'One-shots', 'Effecten'];
 
 export async function renderLibraryItem(item, bpm, sampleRate = 44100) {
+  await item.prepare?.();
   const len = item.length(bpm);
   const ctx = new OfflineAudioContext(2, Math.ceil(len * sampleRate), sampleRate);
   item.render(ctx, ctx.destination, bpm);

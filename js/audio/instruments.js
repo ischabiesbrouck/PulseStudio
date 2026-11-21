@@ -2,6 +2,9 @@
 // Alles werkt op elke BaseAudioContext, dus ook in een OfflineAudioContext voor exporteren en de bibliotheek.
 import { midiToFreq } from '../model.js';
 import { noiseBuffer, softClip, crushCurve } from './plugins.js';
+import { getKit, loadKit } from './samplelib.js';
+
+const rrLast = new Map();
 
 function holdAt(param, t) {
   if (param.cancelAndHoldAtTime) param.cancelAndHoldAtTime(t);
@@ -140,31 +143,36 @@ export function synthVoice(ctx, dest, s, pitch, vel, time) {
 
 // ---------- Sampler ----------
 
-export function samplerVoice(ctx, dest, s, buffer, pitch, vel, time) {
+// `zone`: { buffer, root, loop? } — een eigen sample, of een opname uit een ingebouwd (multisampled) instrument.
+export function samplerVoice(ctx, dest, s, zone, pitch, vel, time) {
+  const buffer = zone?.buffer;
   if (!buffer) return silent(time);
+  const builtin = !!zone.builtin;
   const src = ctx.createBufferSource();
   src.buffer = buffer;
-  const rate = 2 ** ((pitch - s.root + (s.fine || 0) / 100) / 12);
+  const rate = 2 ** ((pitch - zone.root + (s.fine || 0) / 100) / 12);
   src.playbackRate.value = rate;
   const dur = buffer.duration;
-  const offset = Math.min(dur * 0.99, (s.start || 0) * dur);
-  if (s.loop) {
+  const offset = builtin ? 0 : Math.min(dur * 0.99, (s.start || 0) * dur);
+  const looping = builtin ? !!zone.loop : s.loop;
+  if (looping) {
     src.loop = true;
-    src.loopStart = Math.max(offset, (s.loopStart ?? 0.3) * dur);
-    src.loopEnd = Math.max(src.loopStart + 0.01, (s.loopEnd ?? 0.9) * dur);
+    src.loopStart = builtin ? zone.loop[0] : Math.max(offset, (s.loopStart ?? 0.3) * dur);
+    src.loopEnd = builtin ? zone.loop[1] : Math.max(src.loopStart + 0.01, (s.loopEnd ?? 0.9) * dur);
   }
   const filter = ctx.createBiquadFilter();
   filter.type = 'lowpass';
-  filter.frequency.value = s.cutoff ?? 18000;
+  // Ingebouwde instrumenten klinken zachter ook doffer, zoals bij een echt instrument.
+  filter.frequency.value = Math.min(s.cutoff ?? 18000, builtin ? 1800 + vel ** 1.4 * 17000 : 20000);
   filter.Q.value = 0.7;
   const amp = ctx.createGain();
-  const peak = (s.gain ?? 0.8) * (0.3 + 0.7 * vel);
+  const peak = (s.gain ?? 0.8) * (0.3 + 0.7 * vel) * (zone.gain ?? 1);
   amp.gain.setValueAtTime(0, time);
   amp.gain.linearRampToValueAtTime(peak, time + Math.max(0.002, s.attack));
   amp.gain.setTargetAtTime(peak * s.sustain, time + Math.max(0.002, s.attack), Math.max(0.005, s.decay / 3));
   src.connect(filter).connect(amp).connect(dest);
   src.start(time, offset);
-  const natural = s.loop ? Infinity : time + (dur - offset) / rate;
+  const natural = looping ? Infinity : time + (dur - offset) / rate;
   const voice = {
     end: natural,
     release(t) {
@@ -303,7 +311,11 @@ const RECIPES = {
   },
 };
 
+// Kits met `sampled` gebruiken echte opnames (samplelib.js); tot die geladen zijn klinkt de synthetische akoestische kit.
 export const DRUM_KITS = {
+  Studio: { name: 'Studio akoestisch (opnames)', recipes: 'Akoestisch', sampled: true },
+  Kamer: { name: 'Jazz in de kamer (opnames)', recipes: 'Akoestisch', sampled: true },
+  Cassette: { name: 'Cassette lo-fi (opnames)', recipes: 'Akoestisch', sampled: true },
   808: { name: 'Analoog 808', recipes: '808' },
   909: { name: 'Analoog 909', recipes: '909' },
   Akoestisch: { name: 'Akoestisch', recipes: 'Akoestisch' },
@@ -329,7 +341,32 @@ export function drumHit(ctx, dest, kit, pitch, vel, time, { buffers, choke } = {
   let end;
   let nodes;
   const sample = pad.audioId && buffers?.get(pad.audioId);
-  if (sample) {
+  const bank = def.sampled ? getKit(kit.kit) : null;
+  if (def.sampled && !bank) loadKit(kit.kit).catch(() => {});
+  const layers = bank?.[pitch];
+  if (!sample && layers) {
+    // Opgenomen kit: kies de laag die bij de aanslagsterkte past en wissel tussen opnames (round robin).
+    const L = layers.length;
+    const files = layers[Math.min(L - 1, Math.floor(vel * L * 0.999))];
+    const key = `${kit.kit}:${pitch}`;
+    const last = rrLast.get(key);
+    let pickI = Math.floor(Math.random() * files.length);
+    if (files.length > 1 && pickI === last) pickI = (pickI + 1) % files.length;
+    rrLast.set(key, pickI);
+    const buf = files[pickI];
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.playbackRate.value = tune;
+    const g = ctx.createGain();
+    const len = buf.duration / tune;
+    out.gain.value = (0.45 + 0.55 * vel) * (kit.level ?? 0.9) * (pad.level ?? 1) * (bank.gain?.[pitch] ?? 1);
+    g.gain.setValueAtTime(1, time);
+    if (dec < 1) g.gain.setTargetAtTime(0, time + len * dec * 0.5, len * dec * 0.12);
+    src.connect(g).connect(out);
+    src.start(time);
+    end = time + len + 0.05;
+    nodes = [src];
+  } else if (sample) {
     const src = ctx.createBufferSource();
     src.buffer = sample;
     src.playbackRate.value = tune;

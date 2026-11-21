@@ -14,7 +14,11 @@ import { createBrowser } from './ui/browser.js';
 import { liveViews } from './ui/devices.js';
 import { renderLibraryItem, LIBRARY } from './audio/library.js';
 import { createInsert, PLUGIN_DEFS } from './audio/plugin-defs.js';
-import { defaultSynth, defaultDrums, DRUM_KEYS, gainToDb } from './model.js';
+import { defaultSynth, defaultDrums, defaultSampler, DRUM_KEYS, gainToDb } from './model.js';
+import { INSTRUMENTS, CREDITS, loadInstrument, loadKit, isSampleKit } from './audio/samplelib.js';
+import { DRUM_KITS } from './audio/instruments.js';
+import { findPattern, isDrumPattern, drumNotes, melodicNotes } from './audio/patterns.js';
+import { preloadProject } from './audio/engine.js';
 
 const buffers = new Map();
 const peaks = new Map();
@@ -564,9 +568,33 @@ async function libraryBuffer(item) {
 // Voorbeeldweergave vanuit de browser: geluid, synthpreset of drumkit.
 async function previewItem(item) {
   await engine.ensure();
-  if (item.kind === 'sound') engine.previewBuffer(await libraryBuffer(LIBRARY.find((i) => i.id === item.id)));
-  else if (item.kind === 'preset') engine.previewSynth(defaultSynth(item.id), 60);
-  else if (item.kind === 'kit') engine.previewKit(defaultDrums(item.id));
+  try {
+    if (item.kind === 'sound') {
+      ui.info.textContent = 'Geluid wordt gemaakt…';
+      engine.previewBuffer(await libraryBuffer(LIBRARY.find((i) => i.id === item.id)));
+    } else if (item.kind === 'preset') engine.previewSynth(defaultSynth(item.id), 60);
+    else if (item.kind === 'kit') {
+      if (isSampleKit(item.id)) await withProgress(DRUM_KITS[item.id].name, (cb) => loadKit(item.id, cb));
+      engine.previewKit(defaultDrums(item.id));
+    } else if (item.kind === 'instrument') {
+      const zones = await withProgress(INSTRUMENTS[item.id].name, (cb) => loadInstrument(item.id, cb));
+      engine.previewInstrument(item.id, zones);
+    } else if (item.kind === 'pattern') {
+      const pat = findPattern(item.id);
+      const loop = LIBRARY.find((i) => i.id === `loop-${pat.id}`);
+      if (loop) engine.previewBuffer(await libraryBuffer(loop));
+    }
+  } catch {
+    toast('Dit geluid kon niet worden geladen. Controleer de internetverbinding.', 3500);
+  }
+}
+
+// Laadt opnames met voortgang in de infobalk.
+async function withProgress(name, load) {
+  ui.info.textContent = `${name} laden…`;
+  const res = await load((f) => { ui.info.textContent = `${name} laden… ${Math.round(f * 100)}%`; });
+  ui.info.textContent = `${name} geladen.`;
+  return res;
 }
 
 // Iets uit de browser plaatsen: op een spoor (slepen), of op het geselecteerde spoor (dubbelklik of plusknop).
@@ -614,9 +642,40 @@ async function dropItem(data, { trackId = null, beat = null, useSelection = fals
     return;
   }
   if (data.kind === 'kit') {
+    if (isSampleKit(data.id)) withProgress(DRUM_KITS[data.id].name, (cb) => loadKit(data.id, cb)).catch(() => toast('De opnames konden niet worden geladen.'));
     if (target?.kind === 'drums') { commit(() => { target.drums.kit = data.id; }, 'params'); select(target.id, null); app.audition(target, 36, 0.9); }
     else newTrack('drums', 'Drums', (t) => { t.drums = defaultDrums(data.id); });
     app.showPanel('sound');
+    return;
+  }
+  if (data.kind === 'instrument') {
+    const def = INSTRUMENTS[data.id];
+    withProgress(def.name, (cb) => loadInstrument(data.id, cb)).catch(() => toast('De opnames konden niet worden geladen.'));
+    if (target?.kind === 'sampler') { commit(() => { Object.assign(target.sampler, { instrument: data.id, sampleName: def.name }); }); select(target.id, null); }
+    else newTrack('sampler', def.name.split(' (')[0], (t) => { t.sampler = defaultSampler(data.id); t.sampler.sampleName = def.name; });
+    app.showPanel('sound');
+    return;
+  }
+  if (data.kind === 'pattern') {
+    const pat = findPattern(data.id);
+    if (!pat) return;
+    const drums = isDrumPattern(pat);
+    const { notes, length } = drums ? drumNotes(pat) : melodicNotes(pat);
+    const fits = drums ? target?.kind === 'drums' : target && ['synth', 'sampler'].includes(target.kind);
+    let track = fits ? target : null;
+    if (!track) {
+      track = createTrack(drums ? 'drums' : pat.instrument ? 'sampler' : 'synth', p.tracks.length, pat.name);
+      if (drums) track.drums = defaultDrums(pat.kit);
+      else if (pat.instrument) track.sampler = defaultSampler(pat.instrument);
+      else track.synth = defaultSynth(pat.preset);
+      if (drums && isSampleKit(pat.kit)) loadKit(pat.kit).catch(() => {});
+      if (pat.instrument) loadInstrument(pat.instrument).catch(() => {});
+    }
+    const clip = createClip(track.kind, at, Math.max(length, 4 * BEATS_PER_BAR), { pattern: length, name: pat.name, notes });
+    commit(() => { if (!p.tracks.includes(track)) p.tracks.push(track); track.clips.push(clip); });
+    select(track.id, clip.id);
+    app.showPanel('editor');
+    toast(`"${pat.name}" staat op maat ${Math.floor(at / BEATS_PER_BAR) + 1}. Je kunt de noten aanpassen in de editor.`, 3500);
     return;
   }
   if (data.kind === 'fx') {
@@ -668,6 +727,9 @@ async function openProject(raw) {
   } catch (err) { console.error(err); }
   setProject(p);
   drawPlayhead();
+  // Opnames die dit project gebruikt alvast op de achtergrond laden.
+  preloadProject(p, (f) => { ui.info.textContent = `Opnames laden… ${Math.round(f * 100)}%`; })
+    .then((res) => { if (res.length) ui.info.textContent = res.some((r) => r.status === 'rejected') ? 'Niet alle opnames konden worden geladen (geen internet?).' : 'Opnames geladen.'; });
 }
 
 function dialog(title, ...content) {
@@ -721,9 +783,13 @@ function showHelp() {
     ['Dubbelklik in een spoor', 'Nieuwe clip (of audio kiezen)'], ['Slepen in de liniaal', 'Loopgebied kiezen (Shift: per tel)'],
     ['Ctrl + scrollwiel', 'In- en uitzoomen'], ['Shift tijdens slepen', 'Fijner raster'], ['Dubbelklik op een schuif', 'Standaardwaarde'],
   ];
-  dialog('Sneltoetsen',
+  dialog('Sneltoetsen en bronnen',
     h('table.keys', {}, rows.map(([key, what]) => h('tr', {}, h('th', {}, key), h('td', {}, what)))),
-    h('p.hint', {}, 'Alles wordt automatisch in deze browser opgeslagen. Gebruik Exporteren om je nummer als WAV-bestand te bewaren.'));
+    h('p.hint', {}, 'Alles wordt automatisch in deze browser opgeslagen. Gebruik Exporteren om je nummer als WAV-bestand te bewaren.'),
+    h('h3.credits-title', {}, 'Opnames'),
+    h('p.hint', {}, 'PulseStudio gebruikt vrij te gebruiken opnames. Ze worden geladen zodra je ze nodig hebt en daarna in deze browser bewaard, zodat ze ook offline werken.'),
+    h('ul.credits', {}, CREDITS.map((c) => h('li', {},
+      h('strong', {}, c.name), ` door ${c.by}, `, h('a', { href: c.url, target: '_blank', rel: 'noopener' }, c.license), `. Gebruikt voor: ${c.use}.`))));
 }
 
 // ---------- Start ----------

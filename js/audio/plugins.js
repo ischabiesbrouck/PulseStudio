@@ -38,25 +38,40 @@ export function noiseBuffer(ctx) {
   return buf;
 }
 
-// Galm-impulsrespons: ruis met exponentieel verval en een filter dat steeds donkerder wordt.
+// Galm-impulsrespons per ruimtetype: vroege reflecties, opbouw en een staart die steeds donkerder wordt.
+const ROOMS = {
+  kamer: { er: [0.002, 0.03], taps: 14, build: 0.004, dark: 1.1 },
+  zaal: { er: [0.01, 0.08], taps: 10, build: 0.02, dark: 1 },
+  plaat: { er: null, taps: 0, build: 0.001, dark: 0.55 },
+  kerk: { er: [0.03, 0.16], taps: 8, build: 0.07, dark: 1.25 },
+};
 const irCache = new WeakMap();
-function impulse(ctx, size, damping) {
-  const key = `${size.toFixed(1)}:${damping.toFixed(2)}`;
+function impulse(ctx, size, damping, type = 'zaal') {
+  const room = ROOMS[type] || ROOMS.zaal;
+  const key = `${type}:${size.toFixed(1)}:${damping.toFixed(2)}`;
   let map = irCache.get(ctx);
   if (!map) irCache.set(ctx, (map = new Map()));
   if (map.has(key)) return map.get(key);
   const sr = ctx.sampleRate;
   const len = Math.max(1, Math.floor(sr * size));
   const buf = ctx.createBuffer(2, len, sr);
+  const damp = Math.min(0.98, damping * room.dark);
   for (let c = 0; c < 2; c++) {
     const d = buf.getChannelData(c);
     let y = 0;
     for (let i = 0; i < len; i++) {
+      const tSec = i / sr;
       const t = i / len;
-      const a = 1 - damping * 0.97 * Math.sqrt(t);
+      const a = 1 - damp * 0.97 * Math.sqrt(t);
       y += a * ((Math.random() * 2 - 1) - y);
-      const early = i < sr * 0.08 && Math.random() < 0.002 ? (Math.random() * 2 - 1) * 3 : 0;
-      d[i] = (y + early) * Math.exp(-6.9 * t);
+      d[i] = y * Math.exp(-6.9 * t) * (1 - Math.exp(-tSec / room.build));
+    }
+    // Vroege reflecties: een paar losse echo's van de wanden, per kanaal anders voor ruimtelijkheid.
+    if (room.er) {
+      for (let k = 0; k < room.taps; k++) {
+        const at = Math.floor(sr * (room.er[0] + Math.random() * (room.er[1] - room.er[0])));
+        if (at < len) d[at] += (Math.random() < 0.5 ? -1 : 1) * (0.9 - k * 0.04) * (0.6 + Math.random() * 0.4);
+      }
     }
   }
   map.set(key, buf);
@@ -232,8 +247,8 @@ export const IMPL = {
     return {
       input: w.input, output: w.output,
       update(p, bpm, set) {
-        const k = `${p.size.toFixed(1)}:${p.damping.toFixed(2)}`;
-        if (k !== key) { conv.buffer = impulse(ctx, p.size, p.damping); key = k; }
+        const k = `${p.type}:${p.size.toFixed(1)}:${p.damping.toFixed(2)}`;
+        if (k !== key) { conv.buffer = impulse(ctx, p.size, p.damping, p.type); key = k; }
         set(pre.delayTime, p.predelay);
         w.mix(set, p.mix);
       },

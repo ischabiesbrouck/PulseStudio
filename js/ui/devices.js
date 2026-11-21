@@ -1,11 +1,13 @@
 // Apparaten: instrumenten en effecten als hardware-achtige modules met een scherm en draaiknoppen.
 import { state, commit, gesture } from '../state.js';
 import { SYNTH_PRESETS, BASE_SYNTH, DRUM_ROWS, DRUM_KEYS, defaultSynth, noteName, clamp } from '../model.js';
-import { PLUGIN_DEFS, formatParam } from '../audio/plugin-defs.js';
+import { PLUGIN_DEFS, PLUGIN_PRESETS, formatParam } from '../audio/plugin-defs.js';
 import { DRUM_KITS } from '../audio/instruments.js';
+import { INSTRUMENTS, getInstrument, loadInstrument, isSampleKit, getKit, loadKit, SAMPLE_KITS } from '../audio/samplelib.js';
 import { h, icon, select } from './dom.js';
 import { knob, pick, waveOptions } from './knob.js';
 import { ACCENT as ORANGE, ACCENT_FILL, SECOND, GRID, GRID_STRONG, LABEL, font } from './theme.js';
+import { toast } from './dom.js';
 
 // Schermen die live meebewegen (gain reduction); app.js roept tick() aan zolang het paneel open is.
 export const liveViews = new Set();
@@ -364,7 +366,12 @@ export function effectDevice(ins, { chainKey, onRemove, onMove, first, last }) {
     }
   }
   const cols = knobs.length > 4 ? Math.ceil(knobs.length / 2) : knobs.length;
+  const presets = PLUGIN_PRESETS[ins.type];
+  const presetSel = presets ? h('select', { 'aria-label': `Preset voor ${def.name}`, title: 'Kant-en-klare instelling', style: { maxWidth: '130px' } },
+    h('option', { value: '' }, 'Preset…'), Object.keys(presets).map((n) => h('option', { value: n }, n))) : null;
+  presetSel?.addEventListener('change', () => { if (presetSel.value) commit(() => Object.assign(ins.params, presets[presetSel.value])); });
   const tools = [
+    presetSel,
     h('button.tbtn.ic', { disabled: first, onclick: () => onMove(-1), 'aria-label': 'Naar links', title: 'Naar links in de keten' }, icon('chevronLeft', 14)),
     h('button.tbtn.ic', { disabled: last, onclick: () => onMove(1), 'aria-label': 'Naar rechts', title: 'Naar rechts in de keten' }, icon('chevron', 14)),
     h('button.tbtn.ic', { onclick: onRemove, 'aria-label': `${def.name} verwijderen`, title: 'Verwijderen' }, icon('close', 13)),
@@ -470,12 +477,27 @@ export function drumsDevice(track, app) {
       knobGrid(3, [PK('Volume', 'level', 0, 1.5, 0.01, pct, 1), PK('Stem', 'tune', -12, 12, 0.5, st, 0), PK('Lengte', 'decay', 0.2, 2.5, 0.01, pct, 1)]), sample);
   }
   renderEditor();
-  const kitSel = select(Object.entries(DRUM_KITS).map(([id, d]) => [id, d.name]), k.kit, (v) => { commit(() => { k.kit = v; }, 'params'); app.audition(track, 36, 0.9); }, { 'aria-label': 'Kit' });
+  const kitSel = select(Object.entries(DRUM_KITS).map(([id, d]) => [id, d.name]), k.kit, (v) => {
+    commit(() => { k.kit = v; }, 'params');
+    if (isSampleKit(v) && !getKit(v)) loadKit(v).then(() => app.audition(track, 36, 0.9)).catch(() => toast('De opnames konden niet worden geladen. Is er internet?'));
+    else app.audition(track, 36, 0.9);
+  }, { 'aria-label': 'Kit' });
+  // Status van een kit met echte opnames: laden, klaar of synthetische vervanging.
+  const status = h('p.hint', { style: { maxWidth: '120px', fontSize: '11.5px' } });
+  if (isSampleKit(k.kit)) {
+    if (getKit(k.kit)) status.textContent = `Opnames: Virtuosity Drums (CC0). ${SAMPLE_KITS[k.kit].size}.`;
+    else {
+      status.textContent = 'Opnames laden…';
+      loadKit(k.kit, (f) => { status.textContent = `Opnames laden… ${Math.round(f * 100)}%`; })
+        .then(() => { status.textContent = 'Opnames geladen.'; })
+        .catch(() => { status.textContent = 'Laden mislukt; je hoort de synthetische kit.'; });
+    }
+  }
   return frame({
-    title: 'Drumcomputer', cls: 'instrument', info: 'Vier kits met twaalf geluiden; elke pad kan een eigen sample krijgen',
+    title: 'Drumcomputer', cls: 'instrument', info: 'Kits met echte opnames en elektronische kits; elke pad kan een eigen sample krijgen',
     lead: [kitSel],
     body: [
-      col('Kit', knobGrid(1, [
+      col('Kit', status, knobGrid(1, [
         knob({ label: 'Stemming', min: -12, max: 12, step: 0.5, def: 0, small: true, size: 40, get: () => k.tune, set: (v) => { k.tune = v; }, format: st }),
         knob({ label: 'Lengte', min: 0.3, max: 2.5, step: 0.01, def: 1, small: true, size: 40, get: () => k.decay, set: (v) => { k.decay = v; }, format: pct }),
         knob({ label: 'Volume', min: 0, max: 1, step: 0.01, def: 0.9, small: true, size: 40, get: () => k.level, set: (v) => { k.level = v; }, format: pct }),
@@ -486,8 +508,63 @@ export function drumsDevice(track, app) {
   });
 }
 
+// Keuzelijst met de ingebouwde instrumenten (echte opnames), gegroepeerd.
+function instrumentSelect(value, onChange) {
+  const sel = h('select', { 'aria-label': 'Instrument', style: { maxWidth: '220px' } }, h('option', { value: '' }, 'Eigen sample'));
+  const groups = {};
+  for (const [id, d] of Object.entries(INSTRUMENTS)) (groups[d.cat] ||= []).push([id, d.name]);
+  for (const [cat, items] of Object.entries(groups)) sel.append(h('optgroup', { label: cat }, items.map(([id, n]) => h('option', { value: id }, n))));
+  sel.value = value || '';
+  sel.addEventListener('change', () => onChange(sel.value || null));
+  return sel;
+}
+
+function builtinSamplerDevice(track, app) {
+  const s = track.sampler;
+  const def = INSTRUMENTS[s.instrument];
+  let progress = 0;
+  const scr = screen(320, 120, def.name, (g, W, H, val) => {
+    const zones = getInstrument(s.instrument);
+    const lo = 21, hi = 108, kw = W / (hi - lo + 1);
+    for (let m = lo; m <= hi; m++) {
+      const black = [1, 3, 6, 8, 10].includes(m % 12);
+      g.fillStyle = black ? '#2a2a30' : '#3a3a42';
+      g.fillRect((m - lo) * kw, H - 30, kw - 1, black ? 18 : 28);
+    }
+    if (!zones) {
+      g.font = font(11, 600); g.fillStyle = LABEL;
+      g.fillText(`Opnames laden… ${Math.round(progress * 100)}%`, 12, 36);
+      g.fillStyle = ORANGE; g.fillRect(12, 46, (W - 24) * progress, 3);
+      val.textContent = '';
+      return;
+    }
+    g.fillStyle = ORANGE;
+    for (const z of zones) g.fillRect((z.root - lo) * kw, H - 34, Math.max(2, kw), 4);
+    g.font = font(11, 500); g.fillStyle = LABEL;
+    g.fillText(`${zones.length} opnames van ${noteName(zones[0].root)} tot ${noteName(zones[zones.length - 1].root)}`, 12, 36);
+    g.fillText(zones[0].loop ? 'Aanhouden met naadloze loop' : 'Natuurlijk uitklinkend', 12, 54);
+    val.textContent = 'Opnames';
+  });
+  if (!getInstrument(s.instrument)) {
+    loadInstrument(s.instrument, (f) => { progress = f; scr.draw(); }).then(() => scr.draw()).catch(() => { progress = 0; scr.val.textContent = 'Laden mislukt'; });
+  }
+  const K = (label, key, min, max, step, format, d, curve) => knob({ label, min, max, step, format, def: d, curve, small: true, size: 40, get: () => s[key], set: (v) => { s[key] = v; } });
+  return frame({
+    title: 'Sampler', cls: 'instrument', info: 'Ingebouwd instrument met echte opnames',
+    lead: [instrumentSelect(s.instrument, (id) => commit(() => { s.instrument = id; if (id) s.sampleName = INSTRUMENTS[id].name; })),
+      h('button.btn.small', { onclick: () => app.audition(track, 60, 0.8) }, icon('play', 12), 'Luister')],
+    body: [
+      col('Instrument', scr.el, h('p.hint', { style: { maxWidth: '320px', fontSize: '11.5px' } }, `Bron: ${def.source === 'salamander' ? 'Salamander Grand Piano (Alexander Holm, CC BY 3.0)' : 'FluidR3_GM (Frank Wen, CC BY 3.0)'}. Zachter spelen klinkt ook doffer.`)),
+      col('Toon', knobGrid(1, [K('Fijn', 'fine', -100, 100, 1, ct, 0)])),
+      col('Envelope', knobGrid(3, [K('Att', 'attack', 0.001, 3, 0.001, ms, 0.003, 'exp'), K('Dec', 'decay', 0.01, 4, 0.01, ms, 0.5, 'exp'), K('Sus', 'sustain', 0, 1, 0.01, pct, 1),
+        K('Rel', 'release', 0.01, 5, 0.01, ms, 0.5, 'exp'), K('Filter', 'cutoff', 80, 18000, 1, hz, 18000, 'exp'), K('Volume', 'gain', 0, 1.5, 0.01, pct, 0.8)])),
+    ],
+  });
+}
+
 export function samplerDevice(track, app) {
   const s = track.sampler;
+  if (s.instrument && INSTRUMENTS[s.instrument]) return builtinSamplerDevice(track, app);
   const markers = () => (s.loop ? [['start', 'S'], ['loopStart', 'L'], ['loopEnd', 'E']] : [['start', 'S']]);
   const scr = screen(320, 120, s.sampleName || 'Sample', (g, W, H) => {
     gridLines(g, W, H, { ys: [H / 2], xs: [1, 2, 3].map((i) => (i * W) / 4) });
@@ -541,7 +618,8 @@ export function samplerDevice(track, app) {
   const K = (label, key, min, max, step, format, def, curve) => knob({ label, min, max, step, format, def, curve, small: true, size: 40, get: () => s[key], set: (v) => { s[key] = v; } });
   return frame({
     title: 'Sampler', cls: 'instrument', info: 'Speelt een sample chromatisch af',
-    lead: [h('button.btn.small', { onclick: () => app.audition(track, s.root, 0.85) }, icon('play', 12), 'Luister')],
+    lead: [instrumentSelect(null, (id) => commit(() => { s.instrument = id; if (id) s.sampleName = INSTRUMENTS[id].name; })),
+      h('button.btn.small', { onclick: () => app.audition(track, s.root, 0.85) }, icon('play', 12), 'Luister')],
     body: [
       col('Sample', scr.el, h('div', { style: { display: 'flex', gap: '6px' } },
         h('button.btn.small', { onclick: async () => { const res = await app.pickSample(); if (res) commit(() => { s.audioId = res.id; s.sampleName = res.name; }); } }, 'Bestand kiezen…'),

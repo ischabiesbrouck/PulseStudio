@@ -26,6 +26,15 @@ Een all-in-one DAW (digital audio workstation) in de browser: componeren, opneme
 - Fades op audioclips (witte blokjes bovenin de clip), stereometers in de spoorkoppen en een infobalk die uitlegt waar de muis staat.
 - Vormgeving: neutraal grafiet, Archivo en Archivo Narrow, één amber accent en geen decoratieve gloed of kleurverlopen.
 
+## Echte opnames
+
+Naast de synthese gebruikt PulseStudio opnames uit vrij te gebruiken bibliotheken. Ze worden pas geladen als je ze nodig hebt en daarna in de browser bewaard (Cache API), zodat ze ook offline werken.
+
+- **Drumkits** Studio akoestisch, Jazz in de kamer en Cassette lo-fi: *Virtuosity Drums* van Versilian Studios (CC0), met close-microfoons op kick en snare, overheads, kamer- en lo-fi-microfoons, tot zes snelheidslagen en round robin. Handklappen uit *VCSL* (CC0).
+- **Vleugel**: *Salamander Grand Piano V3* door Alexander Holm, [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/), 30 opnames van A0 tot C8.
+- **31 overige instrumenten** (elektrische piano's, orgels, mallets, gitaren, bassen, strijkers, koor, blazers, synths, wereld): *FluidR3_GM* door Frank Wen, CC BY 3.0, via [midi-js-soundfonts](https://github.com/gleitz/midi-js-soundfonts) van Benjamin Gleitzman. Aanhoudende instrumenten krijgen een naadloze loop.
+- **Patronen**: 14 drumgrooves en 12 melodische figuren als bewerkbare clips, ook als audioloop in het tempo van je project.
+
 ## Starten
 
 ```bash

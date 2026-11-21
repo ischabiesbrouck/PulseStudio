@@ -1,6 +1,6 @@
 // Apparaten: instrumenten en effecten als hardware-achtige modules met een scherm en draaiknoppen.
 import { state, commit, gesture } from '../state.js';
-import { SYNTH_PRESETS, BASE_SYNTH, DRUM_ROWS, DRUM_KEYS, defaultSynth, noteName, clamp, audioTimeRatio } from '../model.js';
+import { SYNTH_PRESETS, BASE_SYNTH, DRUM_ROWS, DRUM_KEYS, defaultSynth, noteName, clamp, audioTimeRatio, isBlackKey } from '../model.js';
 import { analyseTempo } from '../audio/warp.js';
 import { PLUGIN_DEFS, PLUGIN_PRESETS, formatParam } from '../audio/plugin-defs.js';
 import { DRUM_KITS } from '../audio/instruments.js';
@@ -398,6 +398,49 @@ const col = (label, ...children) => h('div.dev-col', {}, label ? h('span.dev-sec
 const knobGrid = (cols, knobs) => h('div.knobs', { style: { '--cols': cols } }, knobs);
 const fieldSm = (label, control) => h('label.field-sm', {}, h('span', {}, label), control);
 
+// Drie octaven rond een toon (vanaf een C), met die toon gemarkeerd.
+const keysAround = (track, app, root = 60, width = 300) => {
+  const lo = clamp(Math.floor((root - 12) / 12) * 12, 24, 72);
+  return miniKeys(track, app, { lo, hi: lo + 36, mark: root, width });
+};
+
+// Klikbaar keyboard: klik of sleep over de toetsen om het spoor te spelen (ook tijdens opnemen).
+// `mark`: toets die gemarkeerd wordt, bijvoorbeeld de grondtoon van een sample.
+export function miniKeys(track, app, { lo = 48, hi = 84, mark = null, width = 320 } = {}) {
+  const whites = [];
+  for (let p = lo; p <= hi; p++) if (!isBlackKey(p)) whites.push(p);
+  const wrap = h('div.mkeys', { style: { width: `${width}px` }, title: 'Klik of sleep over de toetsen om te spelen; met het toetsenbord: A W S E D F T G Y H U J K (Z en X wisselen van octaaf)' });
+  const keys = new Map();
+  whites.forEach((p, i) => {
+    const k = h('span.mk.w', { dataset: { p }, style: { left: `${(i / whites.length) * 100}%`, width: `${100 / whites.length}%` } }, p % 12 === 0 ? h('small', {}, noteName(p)) : null);
+    keys.set(p, k);
+    wrap.append(k);
+  });
+  for (let p = lo; p <= hi; p++) {
+    if (!isBlackKey(p)) continue;
+    const wi = whites.indexOf(p - 1);
+    const k = h('span.mk.b', { dataset: { p }, style: { left: `${((wi + 1) / whites.length) * 100}%`, width: `${(100 / whites.length) * 0.62}%` } });
+    keys.set(p, k);
+    wrap.append(k);
+  }
+  if (mark != null) keys.get(mark)?.classList.add('mark');
+  let held = null;
+  const on = (p) => { if (held === p) return; off(); held = p; keys.get(p)?.classList.add('on'); app.keyDown(track, p); };
+  const off = () => { if (held == null) return; keys.get(held)?.classList.remove('on'); app.keyUp(held); held = null; };
+  const keyAt = (e) => { const el = document.elementFromPoint(e.clientX, e.clientY)?.closest('.mk'); return el && wrap.contains(el) ? +el.dataset.p : null; };
+  wrap.addEventListener('pointerdown', (e) => {
+    const p = keyAt(e);
+    if (p == null) return;
+    e.preventDefault();
+    on(p);
+    const move = (ev) => { const q = keyAt(ev); if (q != null) on(q); };
+    const up = () => { off(); window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  });
+  return wrap;
+}
+
 // ---------- Externe plug-ins (Web Audio Modules) ----------
 
 // Toont de eigen interface van de plug-in; heeft hij die niet, dan draaiknoppen voor zijn parameters.
@@ -468,7 +511,7 @@ export function pluginDevice(track, app) {
     title: pl.name, cls: 'instrument wam', info: `Instrument-plug-in van ${pl.vendor || 'een andere maker'} (Web Audio Module). Speel op het toetsenbord of teken noten in de editor.`,
     lead: [wamBadge(pl), h('button.btn.small', { onclick: () => app.audition(track, 60, 0.85) }, icon('play', 12), 'Luister')],
     tools: [h('button.tbtn', { title: 'Ander instrument kiezen', onclick: () => app.openBrowser('plugins', 'Instrumenten') }, 'Wisselen')],
-    body: [wamView(app, track.id, null)],
+    body: [col(null, wamView(app, track.id, null), keysAround(track, app, 60, 320))],
   });
 }
 
@@ -582,6 +625,7 @@ export function synthDevice(track, app) {
       h('button.btn.small', { onclick: () => app.audition(track, 60, 0.85) }, icon('play', 12), 'Luister'),
     ],
     body: [
+      col('Spelen', miniKeys(track, app, { lo: 48, hi: 72, mark: 60, width: 210 })),
       col('Osc 1', pick(waveOptions(), s.wave1, setP('wave1')),
         knobGrid(3, [K('Unison', 'unison', 1, 7, 1, (v) => `${Math.round(v)}×`), K('Detune', 'uniDetune', 0, 80, 0.5, ct), K('Breedte', 'uniSpread', 0, 1, 0.01, pct)])),
       col('Osc 2', pick(waveOptions(), s.wave2, setP('wave2')),
@@ -713,7 +757,7 @@ function builtinSamplerDevice(track, app) {
     lead: [instrumentSelect(s.instrument, (id) => commit(() => { s.instrument = id; if (id) s.sampleName = INSTRUMENTS[id].name; })),
       h('button.btn.small', { onclick: () => app.audition(track, 60, 0.8) }, icon('play', 12), 'Luister')],
     body: [
-      col('Instrument', scr.el, h('p.hint', { style: { maxWidth: '320px', fontSize: '11.5px' } }, `Bron: ${def.source === 'salamander' ? 'Salamander Grand Piano (Alexander Holm, CC BY 3.0)' : 'FluidR3_GM (Frank Wen, CC BY 3.0)'}. Zachter spelen klinkt ook doffer.`)),
+      col('Instrument', scr.el, keysAround(track, app, 60, 320), h('p.hint', { style: { maxWidth: '320px', fontSize: '11.5px' } }, `Bron: ${def.source === 'salamander' ? 'Salamander Grand Piano (Alexander Holm, CC BY 3.0)' : 'FluidR3_GM (Frank Wen, CC BY 3.0)'}. Zachter spelen klinkt ook doffer. Met "Sample maken" bovenin zet je één noot als eigen sample op een keyboard.`)),
       col('Toon', knobGrid(1, [K('Fijn', 'fine', -100, 100, 1, ct, 0)])),
       col('Envelope', knobGrid(3, [K('Att', 'attack', 0.001, 3, 0.001, ms, 0.003, 'exp'), K('Dec', 'decay', 0.01, 4, 0.01, ms, 0.5, 'exp'), K('Sus', 'sustain', 0, 1, 0.01, pct, 1),
         K('Rel', 'release', 0.01, 5, 0.01, ms, 0.5, 'exp'), K('Filter', 'cutoff', 80, 18000, 1, hz, 18000, 'exp'), K('Volume', 'gain', 0, 1.5, 0.01, pct, 0.8)])),
@@ -732,7 +776,8 @@ export function samplerDevice(track, app) {
     if (s.loop) { g.fillStyle = ACCENT_FILL; g.fillRect(s.loopStart * W, 0, (s.loopEnd - s.loopStart) * W, H); }
     g.fillStyle = ORANGE;
     for (let x = 0; x < W; x += 3) {
-      const v = peaks[Math.floor((x / W) * peaks.length)];
+      const i = Math.floor((x / W) * peaks.length);
+      const v = peaks[s.reverse ? peaks.length - 1 - i : i];
       const hh = Math.max(1, v * (H - 26));
       g.globalAlpha = x / W < s.start ? 0.25 : 0.95;
       g.fillRect(x, H / 2 - hh / 2, 2, hh);
@@ -775,17 +820,27 @@ export function samplerDevice(track, app) {
   const roots = [];
   for (let n = 24; n <= 96; n++) roots.push([n, noteName(n)]);
   const K = (label, key, min, max, step, format, def, curve) => knob({ label, min, max, step, format, def, curve, small: true, size: 40, get: () => s[key], set: (v) => { s[key] = v; } });
+  const detect = h('button.tbtn', {
+    title: 'Grondtoon van het sample bepalen (de toets waarop het op zijn eigen hoogte klinkt)',
+    onclick: () => {
+      const r = app.rootOfSample(s.audioId);
+      if (r?.detected) { commit(() => { s.root = r.root; s.fine = r.fine; }); toast(`Grondtoon: ${noteName(r.root)}${r.fine ? ` (${r.fine > 0 ? '+' : ''}${r.fine} cent bijgesteld)` : ''}.`); }
+      else toast('Geen duidelijke toon gevonden (bijvoorbeeld bij drums of een akkoord). Kies de grondtoon zelf.', 3500);
+    },
+  }, 'Bepalen');
   return frame({
-    title: 'Sampler', cls: 'instrument', info: 'Speelt een sample chromatisch af',
+    title: 'Sampler', cls: 'instrument', info: 'Speelt een sample chromatisch af: elke toets is het sample op een andere hoogte',
     lead: [instrumentSelect(null, (id) => commit(() => { s.instrument = id; if (id) s.sampleName = INSTRUMENTS[id].name; })),
       h('button.btn.small', { onclick: () => app.audition(track, s.root, 0.85) }, icon('play', 12), 'Luister')],
     body: [
       col('Sample', scr.el, h('div', { style: { display: 'flex', gap: '6px' } },
-        h('button.btn.small', { onclick: async () => { const res = await app.pickSample(); if (res) commit(() => { s.audioId = res.id; s.sampleName = res.name; }); } }, 'Bestand kiezen…'),
-        h('button.btn.small', { onclick: () => app.openBrowser('sounds', 'Instrumenten') }, 'Uit de browser'))),
+        h('button.btn.small', { onclick: async () => { const res = await app.pickSample(); if (res) commit(() => { Object.assign(s, { audioId: res.id, sampleName: res.name, root: res.root, fine: res.fine, start: 0 }); }); } }, 'Bestand kiezen…'),
+        h('button.btn.small', { onclick: () => app.openBrowser('sounds', 'Instrumenten') }, 'Uit de browser')),
+      s.audioId ? keysAround(track, app, s.root, 320) : null),
       col('Toon',
-        fieldSm('Grondtoon', select(roots, s.root, (v) => commit(() => { s.root = +v; }, 'params'))),
+        fieldSm('Grondtoon', h('div.inline', {}, select(roots, s.root, (v) => commit(() => { s.root = +v; }, 'params')), detect)),
         fieldSm('Loop', pick([[true, 'Aan'], [false, 'Uit']], s.loop, (v) => { commit(() => { s.loop = v; }, 'params'); scr.draw(); })),
+        fieldSm('Omgekeerd', pick([[true, 'Aan'], [false, 'Uit']], !!s.reverse, (v) => { commit(() => { s.reverse = v; }, 'params'); scr.draw(); })),
         knobGrid(1, [K('Fijn', 'fine', -100, 100, 1, ct, 0)])),
       col('Envelope', knobGrid(3, [K('Att', 'attack', 0.001, 3, 0.001, ms, 0.003, 'exp'), K('Dec', 'decay', 0.01, 4, 0.01, ms, 0.5, 'exp'), K('Sus', 'sustain', 0, 1, 0.01, pct, 1),
         K('Rel', 'release', 0.01, 5, 0.01, ms, 0.3, 'exp'), K('Filter', 'cutoff', 80, 18000, 1, hz, 18000, 'exp'), K('Volume', 'gain', 0, 1.5, 0.01, pct, 0.8)])),
@@ -869,6 +924,7 @@ export function audioDevice(track, app) {
     body: [
       col('Bestand', scr.el, h('div', { style: { display: 'flex', gap: '6px', flexWrap: 'wrap' } },
         h('button.btn.small', { onclick: () => app.splitSelected(), title: 'Clip splitsen op de afspeelkop (Ctrl+E)' }, 'Splitsen'),
+        h('button.btn.small', { onclick: () => app.clipToSampler(clip.id), title: 'Dit geluid op een keyboard zetten: elke toets speelt het op een andere hoogte, zodat je er een melodie mee maakt' }, 'Naar keyboard'),
         h('button.btn.small', { onclick: () => app.pickAudio(track.id, null) }, 'Ander bestand…'),
         clip.warp ? h('button.btn.small', { title: 'Het projecttempo gelijk maken aan het tempo van deze clip', onclick: () => commit((p) => { p.bpm = clamp(Math.round(clip.srcBpm), 30, 300); }) }, 'Projecttempo overnemen') : null)),
       col('Tempo',

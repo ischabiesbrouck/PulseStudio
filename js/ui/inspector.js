@@ -46,7 +46,11 @@ export function createInspector(app) {
       },
     }, icon('trash', 14), 'Verwijderen');
     const bounce = h('button.btn.small.ghost', { title: 'Dit spoor met zijn effecten en sends opnemen als audio op een nieuw spoor (het origineel wordt gedempt)', onclick: () => app.bounceTrack(track.id) }, 'Naar audio');
-    return [seg, h('span.dev-ctx', { style: { '--tc': track.color } }, h('span.tdot'), name), colors, bounce, remove];
+    const clip = track.kind === 'audio' ? track.clips.find((c) => c.id === state.sel.clipId) : null;
+    const toKeys = track.kind === 'audio'
+      ? h('button.btn.small.ghost', { disabled: !clip, title: 'De geselecteerde audioclip als sample op een keyboard zetten, om er een melodie mee te spelen', onclick: () => app.clipToSampler(clip.id) }, 'Naar keyboard')
+      : h('button.btn.small.ghost', { title: `Eén noot van dit spoor (met zijn effecten) opnemen en als sample op een keyboard zetten. Daarna kun je hem omkeren, loopen of filteren en er een melodie mee spelen.`, onclick: () => app.sampleInstrument(track.id) }, 'Sample maken');
+    return [seg, h('span.dev-ctx', { style: { '--tc': track.color } }, h('span.tdot'), name), colors, toKeys, bounce, remove];
   }
 
   function addBox(inserts, chainKey) {

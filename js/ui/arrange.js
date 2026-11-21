@@ -124,7 +124,7 @@ export function createArrange(app) {
     lane.addEventListener('dblclick', (e) => laneDouble(e, track));
     lane.addEventListener('dragover', (e) => {
       const t = e.dataTransfer.types;
-      if (t.includes(PULSE) || (track.kind === 'audio' && t.includes('Files'))) { e.preventDefault(); lane.classList.add('drop'); }
+      if (t.includes(PULSE) || ((track.kind === 'audio' || track.kind === 'sampler') && t.includes('Files'))) { e.preventDefault(); lane.classList.add('drop'); }
     });
     lane.addEventListener('dragleave', () => lane.classList.remove('drop'));
     lane.addEventListener('drop', (e) => {
@@ -134,7 +134,8 @@ export function createArrange(app) {
       const data = e.dataTransfer.getData(PULSE);
       if (data) { app.dropItem(JSON.parse(data), { trackId: track.id, beat }); return; }
       const file = [...e.dataTransfer.files].find((f) => f.type.startsWith('audio') || /\.(wav|mp3|ogg|flac|m4a|aac|webm)$/i.test(f.name));
-      if (file) app.importAudio(file, track.id, beat);
+      if (file && track.kind === 'sampler') app.loadSampleFile(file, track.id);
+      else if (file) app.importAudio(file, track.id, beat);
     });
     return h('div.arr-row.track-row', { class: sel ? 'selected' : null, dataset: { id: track.id } }, header, lane);
   }

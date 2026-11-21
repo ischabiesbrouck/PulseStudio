@@ -310,6 +310,16 @@ input[type=range]:hover::-webkit-slider-thumb { background: #fff; }
 .field-sm { display: grid; gap: 3px; }
 .field-sm > span { font: 500 12px var(--narrow); color: var(--muted); }
 .inline { display: flex; align-items: center; gap: 4px; }
+/* Klikbaar keyboard */
+.mkeys { position: relative; height: 46px; flex: none; user-select: none; touch-action: none; background: #0d0d0f; border: 1px solid #0a0a0b; border-radius: 3px; overflow: hidden; }
+.mk { position: absolute; top: 0; cursor: pointer; }
+.mk.w { bottom: 0; background: #d9d9dd; border-right: 1px solid #8d8d94; border-radius: 0 0 2px 2px; }
+.mk.w small { position: absolute; left: 2px; bottom: 2px; font: 600 9px var(--narrow); color: #55555c; pointer-events: none; }
+.mk.b { height: 58%; z-index: 1; transform: translateX(-50%); background: #1b1b1f; border: 1px solid #000; border-top: 0; border-radius: 0 0 2px 2px; }
+.mk.w.mark { box-shadow: inset 0 -5px 0 var(--accent); }
+.mk.b.mark { box-shadow: inset 0 -4px 0 var(--accent); }
+.mk.w.on { background: var(--accent); }
+.mk.b.on { background: #c97a1c; }
 /* Externe plug-ins: hun eigen interface staat in een vlak dat zo nodig scrolt. */
 .device.wam .dev-body { padding: 8px; }
 .wam-gui { min-width: 220px; max-width: 900px; max-height: 100%; overflow: auto; background: #111113; border: 1px solid #0a0a0b; border-radius: 3px; padding: 6px; color: #ddd; }

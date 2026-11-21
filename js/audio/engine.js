@@ -18,7 +18,20 @@ export function samplerZone(s, pitch, buffers) {
     if (!zones) { loadInstrument(s.instrument).catch(() => {}); return null; }
     return { ...pickZone(zones, pitch), builtin: true };
   }
-  return { buffer: buffers.get(s.audioId), root: s.root };
+  const buf = buffers.get(s.audioId);
+  return { buffer: s.reverse && buf ? reversedBuffer(buf) : buf, root: s.root };
+}
+
+// Omgekeerde kopie van een sample (bewaard zolang het origineel bestaat).
+const reversedCache = new WeakMap();
+function reversedBuffer(buf) {
+  let r = reversedCache.get(buf);
+  if (!r) {
+    r = new AudioBuffer({ length: buf.length, numberOfChannels: buf.numberOfChannels, sampleRate: buf.sampleRate });
+    for (let c = 0; c < buf.numberOfChannels; c++) r.copyToChannel(buf.getChannelData(c).slice().reverse(), c);
+    reversedCache.set(buf, r);
+  }
+  return r;
 }
 
 // Laadt alle opnames die een project nodig heeft (voor exporteren en vooraf laden).

@@ -100,7 +100,7 @@ export function defaultSynth(preset = 'Lead') {
 export const defaultDrums = (kit = '808') => ({ kit, tune: 0, decay: 1, level: 0.9, pads: {} });
 // `instrument`: een ingebouwd instrument met echte opnames (zie audio/samplelib.js); anders een eigen sample (`audioId`).
 export const defaultSampler = (instrument = null) => ({
-  instrument, audioId: null, sampleName: '', root: 60, fine: 0, start: 0, loop: false, loopStart: 0.3, loopEnd: 0.9,
+  instrument, audioId: null, sampleName: '', root: 60, fine: 0, start: 0, loop: false, loopStart: 0.3, loopEnd: 0.9, reverse: false,
   attack: 0.003, decay: 0.5, sustain: 1, release: instrument ? 0.5 : 0.3, cutoff: 18000, gain: 0.8,
 });
 

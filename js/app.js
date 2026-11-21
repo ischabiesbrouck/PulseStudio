@@ -1,6 +1,7 @@
 // PulseStudio: verbindt de toestand, de audio-engine en de interface.
 import { state, subscribe, emit, setProject, commit, undo, redo, canUndo, canRedo, select, selectedTrack, selectedClip, findTrack, trackOfClip } from './state.js';
-import { migrate, demoProject, createProject, createTrack, createClip, projectEnd, formatPosition, formatTime, snapFloor, clipFromRecording, duplicateClip, BEATS_PER_BAR, uid, clamp } from './model.js';
+import { demoSong } from './demo-song.js';
+import { migrate, createProject, createTrack, createClip, projectEnd, formatPosition, formatTime, snapFloor, clipFromRecording, duplicateClip, BEATS_PER_BAR, uid, clamp } from './model.js';
 import { Engine, renderProject } from './audio/engine.js';
 import { MicRecorder } from './audio/recorder.js';
 import { encodeWav, computePeaks } from './wav.js';
@@ -23,6 +24,8 @@ import { analyseTempo, onWarpChange } from './audio/warp.js';
 import { splitClip, audioTimeRatio } from './model.js';
 import { zipFiles } from './wav.js';
 import { measure } from './audio/loudness.js';
+import { detectPitch, trimSilence } from './audio/pitch.js';
+import { noteName } from './model.js';
 import { CATALOG_BASE, loadWamModule, isSafeUrl } from './audio/wam.js';
 import { createWamInsert } from './audio/plugin-defs.js';
 
@@ -639,7 +642,7 @@ function pickSample() {
       try {
         const buf = await engine.decode(await file.arrayBuffer());
         const name = file.name.replace(/\.[^.]+$/, '');
-        resolve({ id: await storeAudio(file, name, buf), name });
+        resolve({ id: await storeAudio(file, name, buf), name, ...rootOf(buf) });
       } catch {
         toast(`"${file.name}" kan niet worden gelezen als audio.`, 3500);
         resolve(null);
@@ -648,6 +651,113 @@ function pickSample() {
     samplePicker.click();
   });
 }
+
+// ---------- Sampler: elk geluid op een keyboard ----------
+
+// Grondtoon van een sample: de toets waarop het op zijn eigen hoogte klinkt (zonder duidelijke toon: C4).
+function rootOf(buf) {
+  const r = detectPitch(channelsOf(buf), buf.sampleRate);
+  return r ? { root: clamp(r.note, 24, 108), fine: clamp(-r.cents, -50, 50), detected: true } : { root: 60, fine: 0, detected: false };
+}
+
+function copyBuffer(buf, from = 0, to = buf.length, { reverse = false, gain = 1, fadeOut = 0 } = {}) {
+  const len = Math.max(1, to - from);
+  const out = new AudioBuffer({ length: len, numberOfChannels: buf.numberOfChannels, sampleRate: buf.sampleRate });
+  const fo = Math.min(len, Math.round(fadeOut * buf.sampleRate));
+  for (let c = 0; c < buf.numberOfChannels; c++) {
+    const d = buf.getChannelData(c).slice(from, from + len);
+    if (reverse) d.reverse();
+    for (let i = 0; i < len; i++) d[i] *= gain * (i >= len - fo ? (len - i) / fo : 1);
+    out.copyToChannel(d, c);
+  }
+  return out;
+}
+
+// Maakt een samplerspoor met dit geluid, plus een lege clip om meteen een melodie in te tekenen.
+async function makeSamplerTrack(buf, name, { root = null, color = null } = {}) {
+  const p = state.project;
+  const blob = new Blob([encodeWav(channelsOf(buf), buf.sampleRate, 24)], { type: 'audio/wav' });
+  const id = await storeAudio(blob, name, buf);
+  const pitch = root != null ? { root, fine: 0, detected: true } : rootOf(buf);
+  const t = createTrack('sampler', p.tracks.length, `${name} (keyboard)`);
+  Object.assign(t.sampler, { instrument: null, audioId: id, sampleName: name, root: pitch.root, fine: pitch.fine, start: 0, attack: 0.003, decay: 0.5, sustain: 1, release: 0.35, loop: false, reverse: false });
+  if (color) t.color = color;
+  const clip = createClip('sampler', snapFloor(app.playhead(), BEATS_PER_BAR), 2 * BEATS_PER_BAR, { name: 'Melodie' });
+  t.clips.push(clip);
+  commit(() => p.tracks.push(t));
+  select(t.id, clip.id);
+  app.showPanel('sound');
+  toast(`"${name}" staat op een keyboard, grondtoon ${noteName(pitch.root)}${pitch.detected ? '' : ' (geen duidelijke toon gevonden; pas hem aan als het nodig is)'}. Speel met A W S E D… of klik op de toetsen; dubbelklik de clip om noten te tekenen.`, 6000);
+  return t;
+}
+
+// Audioclip (het deel dat in de clip te horen is) naar een keyboard.
+async function clipToSampler(clipId) {
+  const track = trackOfClip(clipId);
+  const clip = track?.clips.find((c) => c.id === clipId);
+  const buf = clip && buffers.get(clip.audioId);
+  if (!buf) { toast('Deze clip heeft geen audio.'); return; }
+  const p = state.project;
+  const sr = buf.sampleRate;
+  const from = Math.max(0, clip.offset || 0);
+  const to = clip.loop ? buf.duration : Math.min(buf.duration, from + (clip.length * (60 / p.bpm)) / audioTimeRatio(clip, p.bpm));
+  const out = copyBuffer(buf, Math.floor(from * sr), Math.max(Math.floor(from * sr) + 1, Math.floor(to * sr)), { reverse: !!clip.reverse, gain: clip.gain ?? 1, fadeOut: 0.008 });
+  await makeSamplerTrack(out, clip.name || 'Sample', { color: track.color });
+}
+
+// Eén noot van een instrumentspoor opnemen (met zijn effecten) en als sample op een keyboard zetten.
+// Zo speel je bijvoorbeeld een Rhodes-noot, een synthklank of een plug-in als sample, en kun je hem omkeren, loopen of filteren.
+async function sampleInstrument(trackId) {
+  const p = state.project;
+  const track = findTrack(trackId);
+  if (!track || track.kind === 'audio') return;
+  const note = track.kind === 'drums' ? 38 : 60;
+  toast(`Een ${track.kind === 'drums' ? 'snare' : noteName(note)} van "${track.name}" opnemen…`, 20000);
+  try {
+    await engine.collectWamStates(p);
+    const holdBeats = 2 / (60 / p.bpm); // twee seconden vasthouden
+    const src = structuredClone(track);
+    Object.assign(src, { id: 'sample-bron', volume: 0, pan: 0, sends: {}, mute: false, solo: false });
+    src.inserts = src.inserts.filter((i) => i.type !== 'pump');
+    src.clips = [createClip(src.kind, 0, holdBeats, { pattern: holdBeats, notes: [{ t: 0, d: holdBeats, p: note, v: 0.85 }] })];
+    const buf = await renderProject({ ...p, tracks: [src] }, buffers, { only: src.id, end: holdBeats, tail: 3, sampleRate: engine.ctx?.sampleRate || 44100 });
+    const ch = channelsOf(buf);
+    const [a, b] = trimSilence(ch, 0.0008, 0, Math.round(buf.sampleRate * 0.01));
+    let peak = 0;
+    for (const c of ch) for (let i = a; i < b; i++) peak = Math.max(peak, Math.abs(c[i]));
+    if (peak < 1e-4) { toast('Er kwam geen geluid uit dit spoor. Laden de opnames nog? Probeer het zo opnieuw.', 4000); return; }
+    const out = copyBuffer(buf, a, b, { gain: 0.89 / peak, fadeOut: 0.02 });
+    await makeSamplerTrack(out, `${track.name} ${noteName(note)}`, { root: note, color: track.color });
+  } catch (err) {
+    toast(`Sample maken is mislukt: ${err.message}`, 4000);
+    console.error(err);
+  }
+}
+
+// Audiobestand op een samplerspoor laten vallen: wordt het sample van dat keyboard.
+async function loadSampleFile(file, trackId) {
+  const track = findTrack(trackId);
+  if (!track || track.kind !== 'sampler') return;
+  try {
+    const buf = await engine.decode(await file.arrayBuffer());
+    const name = file.name.replace(/\.[^.]+$/, '');
+    const id = await storeAudio(file, name, buf);
+    const r = rootOf(buf);
+    commit(() => Object.assign(track.sampler, { instrument: null, audioId: id, sampleName: name, root: r.root, fine: r.fine, start: 0 }));
+    select(track.id, null);
+    app.showPanel('sound');
+    toast(`"${name}" staat nu op dit keyboard, grondtoon ${noteName(r.root)}.`, 3500);
+  } catch {
+    toast(`"${file.name}" kan niet worden gelezen als audio.`, 3500);
+  }
+}
+
+Object.assign(app, {
+  clipToSampler, sampleInstrument, loadSampleFile,
+  rootOfSample: (id) => { const b = buffers.get(id); return b ? rootOf(b) : null; },
+  keyDown: (track, pitch) => pressNote(`ui:${pitch}`, track, pitch, 0.85),
+  keyUp: (pitch) => releaseNote(`ui:${pitch}`),
+});
 
 // ---------- Bibliotheek ----------
 
@@ -956,7 +1066,7 @@ async function showProjects() {
         dlg.close();
         if (item.id === state.project.id) {
           const rest = await store.listProjects();
-          await openProject(rest.length ? await store.loadProject(rest[0].id) : demoProject());
+          await openProject(rest.length ? await store.loadProject(rest[0].id) : demoSong());
         }
         showProjects();
       },
@@ -970,7 +1080,7 @@ async function showProjects() {
           startNew(p);
         },
       }, icon('plus', 16), 'Nieuw project'),
-      h('button.btn', { onclick: () => startNew(demoProject()) }, 'Nieuw voorbeeldproject')),
+      h('button.btn', { onclick: () => startNew(demoSong()), title: 'Het voorbeeldnummer "Nachtlicht": een volledige song om te beluisteren en te bewerken' }, 'Nieuw voorbeeldproject')),
     h('ul.proj-list', {}, rows));
 }
 
@@ -1010,7 +1120,7 @@ async function boot() {
     const last = await store.getMeta('last');
     if (last) project = await store.loadProject(last);
   } catch (err) { console.error(err); }
-  await openProject(project || demoProject());
+  await openProject(project || demoSong());
   requestAnimationFrame(frame);
   if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('./sw.js').catch(() => {});
 }

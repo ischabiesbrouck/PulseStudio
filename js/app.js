@@ -1036,9 +1036,25 @@ async function openProject(raw) {
   } catch (err) { console.error(err); }
   setProject(p);
   drawPlayhead();
-  // Opnames die dit project gebruikt alvast op de achtergrond laden.
-  preloadProject(p, (f) => { ui.info.textContent = `Opnames laden… ${Math.round(f * 100)}%`; })
-    .then((res) => { if (res.length) ui.info.textContent = res.some((r) => r.status === 'rejected') ? 'Niet alle opnames konden worden geladen (geen internet?).' : 'Opnames geladen.'; });
+  // Opnames die dit project gebruikt op de achtergrond laden, maar pas na de eerste klik of na een paar seconden,
+  // zodat de app zelf eerst snel op het scherm staat.
+  preloadSoon(p);
+}
+
+let preloadTimer = null;
+function preloadSoon(p) {
+  clearTimeout(preloadTimer);
+  const go = () => {
+    clearTimeout(preloadTimer);
+    window.removeEventListener('pointerdown', go, true);
+    window.removeEventListener('keydown', go, true);
+    if (state.project !== p) return;
+    preloadProject(p, (f) => { ui.info.textContent = `Opnames laden… ${Math.round(f * 100)}%`; })
+      .then((res) => { if (res.length) ui.info.textContent = res.some((r) => r.status === 'rejected') ? 'Niet alle opnames konden worden geladen (geen internet?).' : 'Opnames geladen.'; });
+  };
+  window.addEventListener('pointerdown', go, true);
+  window.addEventListener('keydown', go, true);
+  preloadTimer = setTimeout(go, 4000);
 }
 
 function dialog(title, ...content) {
@@ -1122,7 +1138,26 @@ async function boot() {
   } catch (err) { console.error(err); }
   await openProject(project || demoSong());
   requestAnimationFrame(frame);
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('./sw.js').catch(() => {});
+  window.__psDone?.();
+  registerServiceWorker();
 }
 
-boot();
+// Service worker: de app start voortaan direct uit de cache. Komt er een nieuwe versie binnen, dan een melding om te herladen.
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('./sw.js').catch(() => {});
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || document.querySelector('.update-bar')) return;
+    const bar = h('div.update-bar', { role: 'status' },
+      h('span', {}, 'Er is een nieuwe versie van PulseStudio.'),
+      h('button.btn.small.primary', { onclick: async () => { await saveNow(); location.reload(); } }, 'Nu herladen'),
+      h('button.btn.small', { onclick: () => bar.remove() }, 'Later'));
+    document.body.append(bar);
+  });
+}
+
+boot().catch((err) => {
+  console.error(err);
+  window.__psFail?.(`PulseStudio kon niet starten (${err.message}).`);
+});

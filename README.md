@@ -2,6 +2,16 @@
 
 Een all-in-one DAW (digital audio workstation) in de browser: componeren, opnemen, mixen en exporteren op één plek. Geen installatie en geen build-stap; alles wordt lokaal in de browser opgeslagen en de app werkt ook offline.
 
+## Voorbeeldnummer
+
+Bij de eerste start (en via **Projecten → Nieuw voorbeeldproject**) opent **Nachtlicht**: melodische deep house in A mineur, 122 BPM, 84 maten (ongeveer 2:45). Het nummer laat zien wat er in PulseStudio zit en is volledig te bewerken:
+
+- **Opbouw**: intro, couplet, opbouw met versnellende roffel en riser, drop met leadmelodie, breakdown met een eigen vleugelmelodie, tweede opbouw, tweede drop met vleugelstabs en de melodie in octaven, en een outro waarin de lagen een voor een verdwijnen.
+- **Klanken**: 909-drums met transiëntvormer en compressor, percussie met de opgenomen studiokit, synthbas met sidechainpomp, Rhodes (opgenomen elektrische piano) met ensemble, Salamander-vleugel, warme pad, arpeggio, supersaw-lead met tape en een riser.
+- **Mix**: galm (Plaatgalm 97) en echo via de return-sporen, en op de master EQ, multiband en maximizer.
+
+De noten staan in `js/demo-song.js`.
+
 ## Wat er al in zit
 
 - **Arrangeerweergave** met synth-, drum-, sampler- en audiosporen. Clips verplaats je door te slepen, met de rechterrand pas je de lengte aan, Alt+slepen kopieert en een dubbelklik maakt een nieuwe clip.

@@ -39,8 +39,8 @@ const clip = (kind, startBar, bars, patternBars, name, notes) =>
 
 const K = 36, SN = 38, CL = 39, RIM = 37, CH_ = 42, OH = 46, SH = 70, CR = 49, RD = 51, TH = 50, TL = 45;
 
-function kicks(notes, bar, skipLast = false) {
-  for (let b = 0; b < 4; b++) if (!(skipLast && b === 3)) notes.push(n(bar * BAR + b, K, b === 0 ? 1 : 0.93));
+function kicks(notes, bar, skipLast = false, level = 1) {
+  for (let b = 0; b < 4; b++) if (!(skipLast && b === 3)) notes.push(n(bar * BAR + b, K, (b === 0 ? 1 : 0.93) * level));
 }
 function hats(notes, bar, r, { open = true, sixteenths = true, level = 1 } = {}) {
   for (let s = 0; s < 16; s++) {
@@ -66,9 +66,10 @@ function drumIntro() {
 function drumGroove(r, { drop = false } = {}) {
   const notes = [];
   for (let bar = 0; bar < 4; bar++) {
-    kicks(notes, bar);
-    claps(notes, bar, drop ? 0.88 : 0.8, drop);
-    hats(notes, bar, r, { open: true, sixteenths: true, level: drop ? 1 : 0.85 });
+    // Het couplet iets zachter dan de drop, zodat de drop echt binnenkomt.
+    kicks(notes, bar, false, drop ? 1 : 0.9);
+    claps(notes, bar, drop ? 0.88 : 0.72, drop);
+    hats(notes, bar, r, { open: true, sixteenths: true, level: drop ? 1 : 0.8 });
     // Kleine variatie aan het eind van elke vier maten.
     if (bar === 3) notes.push(n(bar * BAR + 3.75, CL, 0.45), ...(drop ? [n(bar * BAR + 2.75, K, 0.6)] : []));
   }
@@ -79,15 +80,18 @@ function drumBuild(bars, seed) {
   const r = rng(seed), notes = [];
   for (let bar = 0; bar < bars; bar++) {
     const fromEnd = bars - bar;
-    if (fromEnd > 2) kicks(notes, bar);
-    hats(notes, bar, r, { open: fromEnd > 4, sixteenths: true, level: 0.8 });
+    // Een opbouw bouwt op naar de drop: hij mag spannend zijn, maar niet luider dan wat erna komt.
+    // De kick valt de laatste vier maten weg, zodat hij in de drop weer binnenkomt.
+    if (fromEnd > 4) kicks(notes, bar, false, 0.7);
+    // Dun gehouden: de compressor op de drums trekt zachtere slagen toch weer op, dus minder slagen in plaats van zachter.
+    hats(notes, bar, r, { open: fromEnd > 4, sixteenths: false, level: 0.4 });
     // Roffel: kwarten → achtsten → zestienden, steeds harder; de laatste tel is stil.
-    const step = fromEnd > 4 ? 1 : fromEnd > 2 ? 0.5 : 0.25;
+    const step = fromEnd > 4 ? 1 : fromEnd > 1 ? 0.5 : 0.25;
     for (let t = 0; t < 4; t += step) {
       if (fromEnd === 1 && t >= 3) break;
       const prog = (bar * 4 + t) / (bars * 4);
-      notes.push(n(bar * BAR + t, CL, 0.35 + prog * 0.6, 0.2));
-      if (step <= 0.5) notes.push(n(bar * BAR + t, SN, 0.25 + prog * 0.5, 0.2));
+      notes.push(n(bar * BAR + t, CL, 0.12 + prog * 0.3, 0.2));
+      if (step < 0.5) notes.push(n(bar * BAR + t, SN, 0.15 + prog * 0.35, 0.2));
     }
   }
   // De laatste tel helemaal stil: de spanning vlak voor de drop.
@@ -125,14 +129,14 @@ function tomFill(bars) {
 
 // ---------- Bas ----------
 
-function bassLine(prog, { busy = false } = {}) {
+function bassLine(prog, { busy = false, level = 1 } = {}) {
   const notes = [];
   prog.forEach((c, bar) => {
     const r0 = c.root + 12, o = bar * BAR;
     const hits = busy
       ? [[0, 0.4, 0, 0.95], [0.75, 0.2, 0, 0.7], [1.5, 0.4, 12, 0.85], [2.25, 0.2, 0, 0.7], [2.5, 0.4, 0, 0.9], [3.25, 0.2, 7, 0.75], [3.5, 0.4, 12, 0.8]]
       : [[0, 0.45, 0, 0.9], [1.5, 0.4, 12, 0.8], [2.5, 0.45, 0, 0.85], [3.5, 0.4, 7, 0.75]];
-    for (const [t, d, add, v] of hits) notes.push(n(o + t, r0 + add, v, d));
+    for (const [t, d, add, v] of hits) notes.push(n(o + t, r0 + add, v * level, d));
   });
   return notes;
 }
@@ -140,11 +144,11 @@ function bassLine(prog, { busy = false } = {}) {
 // ---------- Akkoorden ----------
 
 // Rhodes: korte, swingende aanslagen, zoals bij deep house.
-function rhodesComp(prog) {
+function rhodesComp(prog, level = 1) {
   const notes = [];
   prog.forEach((c, bar) => {
     for (const [t, d, v] of [[0, 0.7, 0.62], [1.5, 0.45, 0.48], [2.75, 0.6, 0.56], [3.5, 0.4, 0.44]]) {
-      c.v.forEach((p, i) => notes.push(n(bar * BAR + t + i * 0.008, p, v - i * 0.02, d)));
+      c.v.forEach((p, i) => notes.push(n(bar * BAR + t + i * 0.008, p, (v - i * 0.02) * level, d)));
     }
   });
   return notes;
@@ -155,7 +159,7 @@ const sustained = (prog, octave = 0, v = 0.6, d = BAR) => prog.flatMap((c, bar) 
 function pianoStabs(prog) {
   const notes = [];
   prog.forEach((c, bar) => {
-    for (const t of [0.5, 2.5]) c.v.forEach((p) => notes.push(n(bar * BAR + t, p + 12, 0.42, 0.3)));
+    for (const t of [0.5, 2.5]) c.v.forEach((p) => notes.push(n(bar * BAR + t, p + 12, 0.55, 0.3)));
   });
   return notes;
 }
@@ -166,7 +170,7 @@ function pianoBuild(prog) {
   const notes = [];
   prog.forEach((c, bar) => {
     for (let t = 0; t < 4; t += 0.5) {
-      const v = 0.3 + ((bar * 8 + t * 2) / 32) * 0.55;
+      const v = 0.11 + ((bar * 8 + t * 2) / 32) * 0.22;
       c.v.forEach((p) => notes.push(n(bar * BAR + t, p, v, 0.4)));
       notes.push(n(bar * BAR + t, c.root + 12, v * 0.9, 0.4));
     }
@@ -216,10 +220,11 @@ function pianoBreakdown() {
   const notes = [];
   for (const rep of [0, 1]) {
     const o = rep * 16, lift = rep ? 12 : 0;
-    for (const [t, p, d] of mel) notes.push(n(o + t, p + lift, 0.62 + (t % 2 === 0 ? 0.08 : 0), d));
+    // Zacht gespeeld: de breakdown is de rustpunt van het nummer (een zachte vleugel klinkt ook ronder).
+    for (const [t, p, d] of mel) notes.push(n(o + t, p + lift, 0.36 + (t % 2 === 0 ? 0.05 : 0), d));
     BREAK.forEach((c, bar) => {
-      notes.push(n(o + bar * BAR, c.root + 12, 0.5, 3.8), n(o + bar * BAR, c.root + 24, 0.42, 3.8));
-      c.v.slice(0, 3).forEach((p, i) => notes.push(n(o + bar * BAR + 0.5 + i * 0.12, p - 12, 0.36, 3.2)));
+      notes.push(n(o + bar * BAR, c.root + 12, 0.3, 3.8), n(o + bar * BAR, c.root + 24, 0.26, 3.8));
+      c.v.slice(0, 3).forEach((p, i) => notes.push(n(o + bar * BAR + 0.5 + i * 0.12, p - 12, 0.22, 3.2)));
     });
   }
   return notes;
@@ -234,8 +239,8 @@ export function demoSong() {
   p.masterVolume = 0;
   p.masterInserts = [
     createInsert('eq', { lowCut: 24, lowFreq: 90, low: 0.5, midFreq: 350, mid: -1, midQ: 0.9, highFreq: 10000, high: 1 }),
-    createInsert('multiband', { lowX: 160, highX: 4200, threshold: -20, ratio: 2, attack: 0.02, release: 0.2, low: 0.5, mid: 0, high: 0.5 }),
-    createInsert('maximizer', { gain: 3, ceiling: -1, release: 0.1 }),
+    createInsert('multiband', { lowX: 160, highX: 4200, threshold: -15, ratio: 1.8, attack: 0.02, release: 0.2, low: 0.5, mid: 0, high: 0.5 }),
+    createInsert('maximizer', { gain: 2, ceiling: -1, release: 0.1 }),
   ];
   const [verb, echo] = p.returns;
   verb.inserts = [createInsert('plate', { decay: 0.74, predelay: 0.022, tone: 9500, damping: 6000, mod: 0.55, mix: 1 }), createInsert('eq', { lowCut: 220, highFreq: 9000, high: -2 })];
@@ -276,7 +281,7 @@ export function demoSong() {
       clip('drums', 31, 1, 1, 'Tomroffel', tomFill(1)),
       clip('drums', 32, 1, 1, 'Crash', crash(0.8)),
       clip('drums', 33, 15, 4, 'Shaker', percGroove(rng(33))),
-      clip('drums', 48, 1, 1, 'Crash', crash(0.55)),
+      clip('drums', 48, 1, 1, 'Crash', crash(0.45)),
       clip('drums', 59, 1, 1, 'Tomroffel', tomFill(1)),
       clip('drums', 60, 1, 1, 'Crash', crash(0.85)),
       clip('drums', 61, 15, 4, 'Shaker en ride', percGroove(rng(35), { ride: true })),
@@ -294,12 +299,12 @@ export function demoSong() {
       createInsert('sat', { drive: 6, tone: 7000, mix: 0.3, output: -1 }),
     ];
     t.clips.push(
-      clip('synth', 8, 16, 4, 'Baslijn', bassLine(MAIN)),
-      clip('synth', 24, 6, 4, 'Baslijn', bassLine(MAIN)),
+      clip('synth', 8, 16, 4, 'Baslijn', bassLine(MAIN, { level: 0.85 })),
+      clip('synth', 24, 6, 4, 'Baslijn', bassLine(MAIN, { level: 0.7 })),
       clip('synth', 32, 16, 4, 'Bas drop', bassLine(MAIN, { busy: true })),
-      clip('synth', 52, 4, 4, 'Lange bas', BREAK.map((c, bar) => n(bar * BAR, c.root + 12, 0.7, 3.8))),
+      clip('synth', 52, 4, 4, 'Lange bas', BREAK.map((c, bar) => n(bar * BAR, c.root + 12, 0.4, 3.8))),
       clip('synth', 60, 16, 4, 'Bas drop', bassLine(MAIN, { busy: true })),
-      clip('synth', 76, 4, 4, 'Baslijn', bassLine(MAIN)),
+      clip('synth', 76, 4, 4, 'Baslijn', bassLine(MAIN, { level: 0.75 })),
     );
   });
 
@@ -314,7 +319,8 @@ export function demoSong() {
     ];
     sends(t, -12, -20);
     t.clips.push(
-      clip('sampler', 8, 24, 4, 'Akkoorden', rhodesComp(MAIN)),
+      clip('sampler', 8, 16, 4, 'Akkoorden', rhodesComp(MAIN, 0.85)),
+      clip('sampler', 24, 8, 4, 'Akkoorden', rhodesComp(MAIN, 0.55)),
       clip('sampler', 32, 16, 4, 'Akkoorden', rhodesComp(MAIN)),
       clip('sampler', 60, 16, 4, 'Akkoorden', rhodesComp(MAIN)),
       clip('sampler', 76, 8, 4, 'Lang', sustained(MAIN, 0, 0.5, 3.9)),
@@ -329,9 +335,9 @@ export function demoSong() {
     sends(t, -9, null);
     t.clips.push(
       clip('synth', 0, 8, 4, 'Pad', sustained(MAIN, 0, 0.55)),
-      clip('synth', 24, 8, 4, 'Pad', sustained(MAIN, 0, 0.6)),
-      clip('synth', 48, 8, 4, 'Pad', sustained(BREAK, 0, 0.62)),
-      clip('synth', 56, 4, 4, 'Pad', sustained(MAIN, 0, 0.6)),
+      clip('synth', 24, 8, 4, 'Pad', sustained(MAIN, 0, 0.45)),
+      clip('synth', 48, 8, 4, 'Pad', sustained(BREAK, 0, 0.42)),
+      clip('synth', 56, 4, 4, 'Pad', sustained(MAIN, 0, 0.45)),
       clip('synth', 60, 16, 4, 'Pad', sustained(MAIN, 12, 0.45)),
       clip('synth', 76, 8, 4, 'Pad', sustained(MAIN, 0, 0.55)),
     );
@@ -348,7 +354,7 @@ export function demoSong() {
       clip('synth', 4, 4, 4, 'Arpeggio', arp(MAIN, 41, 0.75)),
       clip('synth', 16, 8, 4, 'Arpeggio', arp(MAIN, 43, 0.9)),
       clip('synth', 32, 16, 4, 'Arpeggio', arp(MAIN, 45)),
-      clip('synth', 56, 4, 4, 'Arpeggio', arp(MAIN, 47, 0.85)),
+      clip('synth', 56, 4, 4, 'Arpeggio', arp(MAIN, 47, 0.5)),
       clip('synth', 60, 16, 4, 'Arpeggio', arp(MAIN, 49)),
     );
   });
@@ -356,7 +362,7 @@ export function demoSong() {
   // Lead
   track('synth', 'Lead', (t) => {
     t.synth = { ...defaultSynth('Supersaw'), cutoff: 2800, attack: 0.008, release: 0.25, gain: 0.4 };
-    t.volume = -15;
+    t.volume = -12.5; // de lead speelt alleen in de drops: daar mag hij erbovenop
     t.inserts = [createInsert('eq', { lowCut: 260, midFreq: 2500, mid: -1.5, midQ: 1.2, highFreq: 9000, high: -1 }), createInsert('tape', { drive: 3, bump: 0, tone: 12000, wow: 0.1, flutter: 0.1, mix: 1 })];
     sends(t, -10, -9);
     t.clips.push(
@@ -368,7 +374,7 @@ export function demoSong() {
   // Vleugel (Salamander)
   track('sampler', 'Vleugel', (t) => {
     t.sampler = { ...defaultSampler('piano'), release: 0.7 };
-    t.volume = -8;
+    t.volume = -9.5; // de breakdown is het rustpunt; de stabs in drop 2 krijgen een hogere aanslag
     t.inserts = [createInsert('eq', { lowCut: 70, midFreq: 300, mid: -1.5, midQ: 1, highFreq: 8000, high: 1 }), createInsert('comp', { threshold: -20, ratio: 2.5, attack: 0.01, release: 0.2, makeup: 2 })];
     sends(t, -8, -22);
     t.clips.push(
@@ -389,7 +395,7 @@ export function demoSong() {
     t.inserts = [createInsert('eq', { lowCut: 400 }), createInsert('width', { width: 1.8 })];
     sends(t, -6, -14);
     // Vier maten (bijna 8 seconden bij 122 BPM): het filter is net open als de drop begint.
-    const swell = [n(0, 69, 0.8, 15.6), n(0, 57, 0.6, 15.6)];
+    const swell = [n(0, 69, 0.55, 15.6), n(0, 57, 0.4, 15.6)];
     t.clips.push(clip('synth', 28, 4, 4, 'Riser', swell), clip('synth', 56, 4, 4, 'Riser', swell.map((x) => ({ ...x }))));
   });
 

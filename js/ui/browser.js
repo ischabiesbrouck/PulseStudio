@@ -6,15 +6,26 @@ import { DRUM_KITS } from '../audio/instruments.js';
 import { LIBRARY, LIBRARY_CATS } from '../audio/library.js';
 import { INSTRUMENTS } from '../audio/samplelib.js';
 import { DRUM_PATTERNS, MELODIC_PATTERNS } from '../audio/patterns.js';
-import { h, icon } from './dom.js';
+import { h, icon, select } from './dom.js';
+import { pick } from './knob.js';
 import { wamCatalog, WAM_GROUP_NAMES } from '../audio/wam.js';
+import { PROGRESSIONS, RHYTHMS, VOICINGS, EXTENSIONS, DEFAULT_SETTINGS, chordNames, parseProgression, spell } from '../chords.js';
 
 const PULSE = 'application/x-pulse';
-const TABS = [['sounds', 'Geluiden'], ['patterns', 'Patronen'], ['instruments', 'Instrumenten'], ['fx', 'Effecten'], ['plugins', 'Plug-ins']];
+const TABS = [['sounds', 'Geluiden'], ['patterns', 'Patronen'], ['chords', 'Akkoorden'], ['instruments', 'Instrumenten'], ['fx', 'Effecten'], ['plugins', 'Plug-ins']];
+const ROOT_OPTIONS = [[0, 'C'], [1, 'C♯ / D♭'], [2, 'D'], [3, 'E♭'], [4, 'E'], [5, 'F'], [6, 'F♯ / G♭'], [7, 'G'], [8, 'A♭'], [9, 'A'], [10, 'B♭'], [11, 'B']];
 
 export function createBrowser(app) {
   let tab = 'sounds';
   let query = '';
+  // Instellingen van de akkoordenmaker (per browser onthouden).
+  let chordSet = { ...DEFAULT_SETTINGS };
+  try { Object.assign(chordSet, JSON.parse(localStorage.getItem('pulsestudio.chords') || '{}')); } catch { /* geen opslag */ }
+  const setChords = (patch) => {
+    chordSet = { ...chordSet, ...patch };
+    try { localStorage.setItem('pulsestudio.chords', JSON.stringify(chordSet)); } catch { /* geen opslag */ }
+    renderList();
+  };
   // Catalogus van vrije WAM-plug-ins (pas geladen als het tabblad open gaat).
   let wamList = null, wamErr = null, wamLoading = false;
   function loadCatalog() {
@@ -62,6 +73,19 @@ export function createBrowser(app) {
         ...Object.entries(cats), ...Object.entries(synth),
       ];
     }
+    if (tab === 'chords') {
+      const item = (p) => {
+        const settings = { ...chordSet, progression: p.id };
+        const names = chordNames(settings);
+        const key = `${spell(chordSet.root, chordSet.root, p.mode)} ${p.mode === 'minor' ? 'mineur' : 'majeur'}`;
+        return {
+          kind: 'chords', id: p.id, name: p.name, icon: 'piano', sub: names, meta: '',
+          tip: `${p.name} in ${key}: ${names} (${p.degrees}). Sleep naar een spoor voor een nieuwe clip, of in de pianorol om de akkoorden in de geopende clip te zetten.`,
+          data: { kind: 'chords', settings },
+        };
+      };
+      return [['Majeur', PROGRESSIONS.filter((p) => p.mode === 'major').map(item)], ['Mineur', PROGRESSIONS.filter((p) => p.mode === 'minor').map(item)]];
+    }
     if (tab === 'plugins') {
       if (!wamList) return [];
       const groups = new Map([['Instrumenten', []]]);
@@ -88,8 +112,8 @@ export function createBrowser(app) {
     if (item.kind !== 'fx' && item.kind !== 'wam') pv.append(h('button', { title: 'Beluisteren', 'aria-label': `${item.name} beluisteren`, onclick: (e) => { e.stopPropagation(); app.previewItem(item); } }, icon('play', 11)));
     if (item.sampler) pv.append(h('button', { title: 'Nieuw samplerspoor', 'aria-label': `${item.name} als sampler`, onclick: (e) => { e.stopPropagation(); app.dropItem({ kind: 'sound', id: item.id, asSampler: true }, {}); } }, 'Sampler'));
     pv.append(h('button', { title: 'Toevoegen', 'aria-label': `${item.name} toevoegen`, onclick: (e) => { e.stopPropagation(); app.dropItem(payload, { useSelection: true }); } }, icon('plus', 11)));
-    const r = h('div.br-item', { draggable: 'true', tabindex: '0', role: 'listitem', title: item.tip },
-      h('span.ic', {}, icon(item.icon)), h('span.nm', {}, item.name), h('span.meta', {}, item.meta), pv);
+    const r = h('div.br-item', { class: item.sub ? 'two' : null, draggable: 'true', tabindex: '0', role: 'listitem', title: item.tip },
+      h('span.ic', {}, icon(item.icon)), h('span.nm', {}, item.name, item.sub ? h('small', {}, item.sub) : null), h('span.meta', {}, item.meta), pv);
     r.addEventListener('dragstart', (e) => {
       e.dataTransfer.setData(PULSE, JSON.stringify(payload));
       e.dataTransfer.effectAllowed = 'copy';
@@ -99,8 +123,32 @@ export function createBrowser(app) {
     return r;
   }
 
+  // De akkoordenmaker: toonsoort, ritme, klank; daaronder de progressies om te slepen.
+  function chordDesigner() {
+    const field = (label, control) => h('label.cd-field', { class: control.tagName === 'SELECT' ? null : 'line' }, h('span', {}, label), control);
+    const custom = h('input.cd-custom', { value: chordSet.custom || '', placeholder: 'bijv. vi IV I V of i ♭VII ♭VI V', 'aria-label': 'Eigen akkoordenreeks in trappen', title: 'Trappen met Romeinse cijfers: hoofdletter = groot, kleine letter = klein. Met 7, maj7, 9, sus2, sus4, ° of ø erachter, en ♭ of b ervoor voor een geleend akkoord.' });
+    custom.addEventListener('change', () => setChords({ custom: custom.value.trim() }));
+    const parsed = chordSet.custom ? parseProgression(chordSet.custom) : null;
+    const customRow = parsed
+      ? row({ kind: 'chords', id: 'custom', name: 'Eigen reeks', icon: 'piano', meta: '', sub: chordNames({ ...chordSet, progression: 'custom' }), tip: 'Je eigen reeks: sleep naar een spoor of in de pianorol.', data: { kind: 'chords', settings: { ...chordSet, progression: 'custom' } } })
+      : h('p.hint.cd-note', {}, chordSet.custom ? 'Deze reeks begrijp ik niet. Gebruik trappen zoals I, ii, iii, IV, V, vi of i, ♭VII.' : 'Of typ een eigen reeks in trappen.');
+    return h('div.chord-designer', {},
+      h('div.cd-grid', {},
+        field('Grondtoon', select(ROOT_OPTIONS, chordSet.root, (v) => setChords({ root: +v }), { 'aria-label': 'Grondtoon' })),
+        field('Ritme', select(RHYTHMS, chordSet.rhythm, (v) => setChords({ rhythm: v }), { 'aria-label': 'Ritme' })),
+        field('Klank', pick(VOICINGS.map(([v, l]) => [v, l, { close: 'Dicht bij elkaar', open: 'Open: één toon een octaaf lager', wide: 'Breed: bas, kwint en terts verspreid over twee octaven' }[v]]), chordSet.voicing, (v) => setChords({ voicing: v }), { label: 'Klank' })),
+        field('Kleur', pick(EXTENSIONS.map(([v, l]) => [v, l, { triad: 'Gewone drieklanken', 7: 'Met septiem (zoals in de toonladder)', 9: 'Met septiem en none' }[v]]), chordSet.extension, (v) => setChords({ extension: v }), { label: 'Kleur' })),
+        field('Per akkoord', pick([[0.5, '½ maat'], [1, '1 maat'], [2, '2 maten']], chordSet.bars, (v) => setChords({ bars: +v }), { label: 'Lengte per akkoord' })),
+        field('Hoogte', pick([[3, 'Laag'], [4, 'Midden'], [5, 'Hoog']], chordSet.octave, (v) => setChords({ octave: +v }), { label: 'Hoogte' })),
+        field('Bas', pick([[true, 'Aan'], [false, 'Uit']], chordSet.bass, (v) => setChords({ bass: v }), { label: 'Grondtoon in de bas' }))),
+      h('div.cd-custom-row', {}, custom, pick([['minor', 'mol', 'De trappen gelden in de mineurtoonladder'], ['major', 'groot', 'De trappen gelden in de majeurtoonladder']], chordSet.customMode, (v) => setChords({ customMode: v }), { label: 'Toonladder van de eigen reeks' })),
+      customRow,
+      h('p.hint.cd-note', {}, 'Sleep een progressie naar een spoor (nieuwe clip) of in de pianorol (in de geopende clip). Met de afspeelknop beluister je hem met de klank van het geselecteerde spoor.'));
+  }
+
   function renderList() {
     const out = [];
+    if (tab === 'chords') out.push(chordDesigner());
     if (tab === 'plugins') {
       loadCatalog();
       out.push(h('div.br-note', {},
@@ -114,7 +162,7 @@ export function createBrowser(app) {
       if (!shown.length) continue;
       out.push(h('div.br-group', { dataset: { group: title } }, title), ...shown.map(row));
     }
-    if (!out.length || (tab === 'plugins' && wamList && out.length === 1)) out.push(h('p.hint', { style: { padding: '14px' } }, 'Niets gevonden.'));
+    if (!out.length || ((tab === 'plugins' && wamList) || tab === 'chords') && out.length === 1) out.push(h('p.hint', { style: { padding: '14px' } }, 'Niets gevonden.'));
     list.replaceChildren(...out);
   }
 

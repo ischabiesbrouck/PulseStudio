@@ -352,6 +352,28 @@ export function createEditor(app) {
     draw();
   }, { passive: false });
 
+  // Akkoorden uit de browser in de pianorol slepen: ze komen op de tel waar je loslaat.
+  const PULSE = 'application/x-pulse';
+  wrap.addEventListener('dragover', (e) => {
+    const { clip, drums } = info();
+    if (!clip || drums || !e.dataTransfer.types.includes(PULSE)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    wrap.classList.add('drop');
+  });
+  wrap.addEventListener('dragleave', (e) => { if (!wrap.contains(e.relatedTarget)) wrap.classList.remove('drop'); });
+  wrap.addEventListener('drop', (e) => {
+    wrap.classList.remove('drop');
+    const { clip, drums } = info();
+    const data = JSON.parse(e.dataTransfer.getData(PULSE) || 'null');
+    if (!clip || drums || !data) return;
+    e.preventDefault();
+    if (data.kind !== 'chords') { app.dropItem(data, { trackId: trackOfClip(clip.id)?.id, beat: clip.start }); return; }
+    const x = e.clientX - cv.getBoundingClientRect().left;
+    const at = Math.max(0, snapFloor(beatOf(x, false), Math.max(1, state.view.grid)));
+    app.insertChords(data.settings, clip, at);
+  });
+
   new ResizeObserver(() => { clampScroll(); draw(); }).observe(wrap);
 
   function deleteSelected() {

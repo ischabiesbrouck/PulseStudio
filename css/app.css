@@ -161,6 +161,24 @@ input[type=checkbox] { accent-color: var(--accent); }
 .seg-btn { flex: 1; height: 22px; padding: 0 5px; background: none; border: 0; border-radius: 2px; color: var(--muted); font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .seg-btn:hover { color: var(--text); }
 .br-head .seg-btn { flex: 1 1 auto; padding: 0 4px; }
+.br-head .seg { display: grid; grid-template-columns: repeat(3, 1fr); }
+.br-item.two { height: 40px; }
+.br-item .nm small { display: block; font: 500 11.5px var(--narrow); color: var(--accent); overflow: hidden; text-overflow: ellipsis; }
+/* Akkoordenmaker */
+.chord-designer { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 10px 12px 12px; border-bottom: 1px solid var(--line); }
+.cd-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 7px 8px; }
+.cd-field { display: grid; gap: 3px; min-width: 0; }
+.cd-field > span { font: 500 11.5px var(--narrow); color: var(--muted); }
+.cd-field select { width: 100%; min-width: 0; }
+/* Keuzeknoppen: label ervoor, knoppen over de volle breedte. */
+.cd-field.line { grid-column: 1 / -1; grid-template-columns: 62px minmax(0, 1fr); align-items: center; }
+.cd-field .pick { min-width: 0; }
+.cd-field .pick button { flex: 1 1 0; min-width: 0; padding: 0 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cd-custom-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+.cd-custom { min-width: 0; height: 24px; padding: 0 7px; }
+.cd-note { margin: 0; font-size: 11.5px; line-height: 1.4; overflow-wrap: anywhere; }
+.chord-designer .br-item { margin: 0 -8px; }
+.ed-wrap.drop { box-shadow: inset 0 0 0 2px var(--accent); }
 .seg-btn[aria-selected="true"] { background: var(--bg-3); color: var(--text); }
 .br-list { flex: 1; overflow: auto; padding: 2px 0 14px; }
 .br-group { padding: 12px 12px 4px; font: 600 12px var(--narrow); color: var(--dim); }

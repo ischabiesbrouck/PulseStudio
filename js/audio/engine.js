@@ -393,6 +393,22 @@ export class Engine {
     src.onended = () => { if (this.previewSrc === src) this.previewSrc = null; };
   }
 
+  // Speelt losse noten (bijvoorbeeld een akkoordprogressie) op een spoor, of met `fallback` (synthinstellingen) als er geen spoor is.
+  previewNotes(track, notes, bpm, fallback) {
+    this.sounding();
+    for (const v of this.previewVoices || []) v.stopNow();
+    const chain = track ? this.chains.get(track.id) : null;
+    const spb = 60 / bpm, t0 = this.ctx.currentTime + 0.05;
+    this.previewVoices = notes.map((n) => {
+      const t = t0 + n.t * spb, dur = n.d * spb;
+      if (chain) return playEvent(this.ctx, chain, track, n.p, n.v, t, dur, this.buffers);
+      const v = synthVoice(this.ctx, this.master.input, fallback, n.p, n.v, t);
+      v.release(t + dur);
+      this.master.tails.push(v);
+      return v;
+    });
+  }
+
   stopPreview() { try { this.previewSrc?.stop(); } catch { /* al gestopt */ } this.previewSrc = null; }
 
   // Speelt een synthpreset of een drumkit los af (voorbeluisteren in de browser).

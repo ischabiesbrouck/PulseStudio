@@ -3,11 +3,11 @@
 //   - Code, stijl, lettertypes en iconen komen uit de cache van deze versie. Een nieuwe versie (VERSION ophogen)
 //     wordt op de achtergrond geïnstalleerd; de app meldt dan dat herladen de nieuwe versie geeft.
 // Houd SHELL gelijk aan de modulepreload-lijst in index.html (tests/shell.test.js controleert dat).
-const VERSION = 'pulsestudio-v9';
+const VERSION = 'pulsestudio-v10';
 const SHELL = [
   './', './index.html', './manifest.webmanifest', './css/app.css', './icons/icon.svg',
   './fonts/archivo-latin.woff2', './fonts/archivo-narrow-latin.woff2',
-  './js/app.js', './js/model.js', './js/state.js', './js/store.js', './js/wav.js', './js/demo-song.js',
+  './js/app.js', './js/model.js', './js/state.js', './js/store.js', './js/wav.js', './js/demo-song.js', './js/chords.js',
   './js/audio/engine.js', './js/audio/chain.js', './js/audio/instruments.js', './js/audio/recorder.js',
   './js/audio/plugins.js', './js/audio/plugin-defs.js', './js/audio/library.js',
   './js/audio/dsp.js', './js/audio/samplelib.js', './js/audio/patterns.js',

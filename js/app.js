@@ -21,7 +21,8 @@ import { DRUM_KITS } from './audio/instruments.js';
 import { findPattern, isDrumPattern, drumNotes, melodicNotes } from './audio/patterns.js';
 import { preloadProject } from './audio/engine.js';
 import { analyseTempo, onWarpChange } from './audio/warp.js';
-import { splitClip, audioTimeRatio } from './model.js';
+import { splitClip, audioTimeRatio, patternOf } from './model.js';
+import { buildProgression } from './chords.js';
 import { zipFiles } from './wav.js';
 import { measure } from './audio/loudness.js';
 import { detectPitch, trimSilence } from './audio/pitch.js';
@@ -816,6 +817,9 @@ async function previewItem(item) {
     } else if (item.kind === 'instrument') {
       const zones = await withProgress(INSTRUMENTS[item.id].name, (cb) => loadInstrument(item.id, cb));
       engine.previewInstrument(item.id, zones);
+    } else if (item.kind === 'chords') {
+      const r = buildProgression(item.data.settings);
+      if (r) engine.previewNotes(melodic(selectedTrack()) ? selectedTrack() : null, r.notes, state.project.bpm, defaultSynth('Keys'));
     } else if (item.kind === 'pattern') {
       const pat = findPattern(item.id);
       const loop = LIBRARY.find((i) => i.id === `loop-${pat.id}`);
@@ -835,6 +839,25 @@ async function withProgress(name, load) {
 }
 
 // Iets uit de browser plaatsen: op een spoor (slepen), of op het geselecteerde spoor (dubbelklik of plusknop).
+// Sporen die noten spelen (en dus akkoorden kunnen krijgen).
+const melodic = (t) => !!t && ['synth', 'sampler', 'plugin'].includes(t.kind);
+
+// Akkoorden in een bestaande clip zetten, vanaf tel `at` binnen de clip (slepen in de pianorol).
+function insertChords(settings, clip, at) {
+  const r = buildProgression(settings);
+  if (!r) { toast('Deze akkoordenreeks begrijp ik niet.', 3000); return; }
+  const track = trackOfClip(clip.id);
+  if (!melodic(track)) { toast('Akkoorden passen alleen in een synth-, sampler- of plug-inspoor.', 3500); return; }
+  commit(() => {
+    for (const n of r.notes) clip.notes.push({ ...n, t: at + n.t });
+    const end = at + r.length;
+    if (patternOf(clip) < end) clip.pattern = end;
+    if (clip.length < clip.pattern) clip.length = clip.pattern;
+  }, 'all');
+  toast(`${r.chords.map((c) => c.name).join(' ')} in de clip gezet vanaf tel ${+(at + 1).toFixed(2)}.`, 3000);
+}
+app.insertChords = insertChords;
+
 async function dropItem(data, { trackId = null, beat = null, useSelection = false } = {}) {
   const p = state.project;
   let target = trackId ? findTrack(trackId) : null;
@@ -918,6 +941,24 @@ async function dropItem(data, { trackId = null, beat = null, useSelection = fals
     select(track.id, clip.id);
     app.showPanel('editor');
     toast(`"${pat.name}" staat op maat ${Math.floor(at / BEATS_PER_BAR) + 1}. Je kunt de noten aanpassen in de editor.`, 3500);
+    return;
+  }
+  if (data.kind === 'chords') {
+    const r = buildProgression(data.settings);
+    if (!r) { toast('Deze akkoordenreeks begrijp ik niet. Gebruik trappen zoals I, ii, IV, V, vi of i, ♭VII.', 4000); return; }
+    let track = melodic(target) ? target : null;
+    const fresh = !track;
+    if (fresh) {
+      // Geen spoor met noten gekozen: een nieuw spoor met de opgenomen vleugel.
+      track = createTrack('sampler', p.tracks.length, 'Akkoorden');
+      track.sampler = { ...defaultSampler('piano'), sampleName: INSTRUMENTS.piano.name };
+      loadInstrument('piano').catch(() => {});
+    }
+    const clip = createClip(track.kind, at, r.length, { pattern: r.length, name: `${r.name} (${r.key})`, notes: r.notes });
+    commit(() => { if (fresh) p.tracks.push(track); track.clips.push(clip); });
+    select(track.id, clip.id);
+    app.showPanel('editor');
+    toast(`${r.chords.map((c) => c.name).join(' ')} op maat ${Math.floor(at / BEATS_PER_BAR) + 1}${fresh ? ', op een nieuw vleugelspoor' : ` in "${track.name}"`}.`, 3500);
     return;
   }
   if (data.kind === 'wam') {

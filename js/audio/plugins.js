@@ -135,9 +135,19 @@ export const IMPL = {
     const mid = biquad(ctx, 'peaking', 1000);
     const high = biquad(ctx, 'highshelf', 6000);
     hp.connect(low).connect(mid).connect(high);
+    // Een band op precies 0 dB laat het signaal exact ongemoeid. Bij exporteren (waar niets meer verandert) slaan we die over;
+    // live blijft de keten staan, zodat draaien aan een band nooit een tik geeft.
+    let out = high;
+    let wired = !(ctx instanceof OfflineAudioContext);
+    if (!wired) { out = gain(ctx); high.connect(out); }
     return {
-      input: hp, output: high,
+      input: hp, output: out,
       update(p, bpm, set) {
+        if (!wired) {
+          wired = true;
+          for (const b of [hp, low, mid, high]) b.disconnect();
+          [[low, p.low], [mid, p.mid], [high, p.high]].filter(([, db]) => db !== 0).reduce((a, [b]) => a.connect(b), hp).connect(out);
+        }
         set(hp.frequency, p.lowCut);
         set(low.frequency, p.lowFreq); set(low.gain, p.low);
         set(mid.frequency, p.midFreq); set(mid.gain, p.mid); set(mid.Q, p.midQ);
@@ -502,25 +512,49 @@ export class Slot {
     this.id = ins.id;
     this.type = ins.type;
     this.ins = ins;
+    this.ctx = ctx;
     this.input = gain(ctx);
     this.output = gain(ctx);
-    this.bypass = gain(ctx, 0);
-    this.wet = gain(ctx);
-    this.fx = IMPL[ins.type](ctx, ins);
+    this.bypass = gain(ctx, ins.on ? 0 : 1);
+    this.wet = gain(ctx, ins.on ? 1 : 0);
     this.input.connect(this.bypass).connect(this.output);
+    this.wet.connect(this.output);
+    this.fx = null;
+    this.parkTimer = 0;
+  }
+
+  build() {
+    this.fx = IMPL[this.type](this.ctx, this.ins);
     this.input.connect(this.fx.input);
-    this.fx.output.connect(this.wet).connect(this.output);
+    this.fx.output.connect(this.wet);
+  }
+
+  // Een uitgeschakeld effect kost niets: na de overgang wordt het afgebroken, bij inschakelen schoon opgebouwd.
+  // Plug-ins van anderen (wam) blijven staan, want die houden zelf hun toestand bij.
+  park() {
+    this.parkTimer = 0;
+    if (this.ins.on || !this.fx) return;
+    const { fx } = this;
+    this.fx = null;
+    try { this.input.disconnect(fx.input); fx.output.disconnect(this.wet); } catch { /* al losgekoppeld */ }
+    fx.dispose?.();
   }
 
   update(ins, bpm, set) {
     this.ins = ins;
+    if (ins.on || this.type === 'wam') {
+      clearTimeout(this.parkTimer);
+      this.parkTimer = 0;
+      if (!this.fx) this.build();
+    } else if (this.fx && !this.parkTimer) this.parkTimer = setTimeout(() => this.park(), 400);
     set(this.bypass.gain, ins.on ? 0 : 1);
     set(this.wet.gain, ins.on ? 1 : 0);
-    this.fx.update(ins.params, bpm, set);
+    this.fx?.update(ins.params, bpm, set);
   }
 
   dispose() {
-    this.fx.dispose?.();
+    clearTimeout(this.parkTimer);
+    this.fx?.dispose?.();
     try { this.output.disconnect(); this.input.disconnect(); } catch { /* al losgekoppeld */ }
   }
 }

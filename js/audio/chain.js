@@ -10,6 +10,33 @@ export function readPeak(analyser, scratch) {
   return max;
 }
 
+// Zet een parameter zonder tik op een nieuwe waarde (tijdconstante 15 ms). Alleen als hij echt verandert, en zodra hij er is
+// wordt hij vastgezet: een setTargetAtTime "loopt" officieel eeuwig door, en dan rekent de browser het filter per sample uit.
+const lastSet = new WeakMap();
+const settling = new Map();
+let settleTimer = 0;
+const SETTLE = 0.35; // seconden; ruim twintig tijdconstanten, dus het restverschil is kleiner dan 1e-9
+function settle() {
+  settleTimer = 0;
+  for (const [param, s] of settling) {
+    if (s.ctx.state === 'closed') { settling.delete(param); continue; }
+    if (s.ctx.currentTime < s.at) continue;
+    settling.delete(param);
+    try { param.cancelScheduledValues(0); param.value = s.v; } catch { /* knoop bestaat niet meer */ }
+  }
+  if (settling.size) settleTimer = setTimeout(settle, 400);
+}
+export function glide(ctx, param, v) {
+  const prev = lastSet.get(param);
+  if (prev === v) return;
+  lastSet.set(param, v);
+  if (prev === undefined && param.value === Math.fround(v)) return; // staat er al
+  const t = ctx.currentTime;
+  param.setTargetAtTime(v, t, 0.015);
+  settling.set(param, { ctx, v, at: t + SETTLE });
+  if (!settleTimer) settleTimer = setTimeout(settle, 400);
+}
+
 export class TrackChain {
   constructor(ctx, dest, { spectrum = false } = {}) {
     this.ctx = ctx;
@@ -39,6 +66,18 @@ export class TrackChain {
     this.slots = [];
     this.signature = '';
     this.choke = {};
+    this.tails = []; // noten die nog klinken of net zijn uitgeklonken: { end, out }
+  }
+
+  // Koppelt noten los die een seconde geleden zijn uitgeklonken. Zonder dit blijven al hun knopen meerekenen
+  // tot de browser toevallig geheugen opruimt, en wordt een nummer (of een lange sessie) steeds zwaarder.
+  sweep(now) {
+    if (!this.tails.length) return;
+    this.tails = this.tails.filter((v) => {
+      if (v.end + 1 >= now) return true;
+      try { v.out.disconnect(); } catch { /* al los */ }
+      return false;
+    });
   }
 
   setInserts(inserts, bpm, set) {
@@ -61,8 +100,7 @@ export class TrackChain {
   // `track` mag ook een master- of return-object zijn: { inserts, pan, volume }.
   // `returns`: Map van return-id naar keten; sends gaan na de fader (post-fader) naar die ketens.
   update(track, bpm, audible, immediate = false, returns = null) {
-    const t = this.ctx.currentTime;
-    const set = immediate ? (param, v) => { param.value = v; } : (param, v) => param.setTargetAtTime(v, t, 0.015);
+    const set = immediate ? (param, v) => { param.value = v; } : (param, v) => glide(this.ctx, param, v);
     this.setInserts(track.inserts || [], bpm, set);
     set(this.panner.pan, track.pan || 0);
     set(this.fader.gain, audible ? dbToGain(track.volume) : 0);
@@ -114,15 +152,15 @@ export class TrackChain {
 
   // Wacht tot alle plug-ins in deze keten geladen zijn (nodig voor offline renderen).
   ready() {
-    return Promise.all([this.instrument?.ready, ...this.slots.map((s) => s.fx.ready)].filter(Boolean));
+    return Promise.all([this.instrument?.ready, ...this.slots.map((s) => s.fx?.ready)].filter(Boolean));
   }
 
   schedule(from, to, time, spb) {
-    for (const s of this.slots) if (s.ins.on && s.fx.schedule) s.fx.schedule(from, to, time, spb, s.ins.params);
+    for (const s of this.slots) if (s.ins.on && s.fx?.schedule) s.fx.schedule(from, to, time, spb, s.ins.params);
   }
 
   reset() {
-    for (const s of this.slots) s.fx.reset?.();
+    for (const s of this.slots) s.fx?.reset?.();
   }
 
   dispose() {

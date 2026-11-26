@@ -35,7 +35,9 @@ export function createArrange(app) {
     loopShade.hidden = !p.loop.on;
     loopShade.style.left = `${HEADER_W + p.loop.start * z()}px`;
     loopShade.style.width = `${(p.loop.end - p.loop.start) * z()}px`;
+    clipUsed.clear();
     const rows = p.tracks.map((t, i) => trackRow(t, i));
+    for (const id of clipCache.keys()) if (!clipUsed.has(id)) clipCache.delete(id);
     const empty = p.tracks.length ? null : h('div.arr-empty', {}, h('p.hint', {}, 'Nog geen sporen. Voeg hieronder een synth, drums, sampler of audiospoor toe, of sleep een geluid uit de browser naar deze plek.'));
     inner.replaceChildren(...[ruler(beats), ...rows, addRow(), loopShade, playhead, empty].filter(Boolean));
     setPlayhead(app.playhead());
@@ -119,7 +121,7 @@ export function createArrange(app) {
       h('div.th-meter', { title: 'Niveau links en rechts' }, mL, mR));
 
     const lane = h('div.lane', { dataset: { track: track.id }, style: { '--tc': track.color } });
-    for (const clip of track.clips) lane.append(clipEl(track, clip));
+    for (const clip of track.clips) lane.append(clipView(track, clip));
     lane.addEventListener('pointerdown', (e) => lanePointer(e, track));
     lane.addEventListener('dblclick', (e) => laneDouble(e, track));
     lane.addEventListener('dragover', (e) => {
@@ -140,8 +142,24 @@ export function createArrange(app) {
     return h('div.arr-row.track-row', { class: sel ? 'selected' : null, dataset: { id: track.id } }, header, lane);
   }
 
+  // Clips die niet veranderd zijn, houden hun element en hun tekening; alleen plek, selectie en gedempt-stand worden bijgewerkt.
+  const clipCache = new Map();
+  const clipUsed = new Set();
+  function clipView(track, clip) {
+    const audio = track.kind === 'audio';
+    const key = `${JSON.stringify({ ...clip, start: 0 })}|${z()}|${track.color}|${track.kind}|${window.devicePixelRatio}|${audio ? `${state.project.bpm}|${app.peaks.has(clip.audioId)}|${app.buffers.has(clip.audioId)}` : ''}`;
+    let entry = clipCache.get(clip.id);
+    if (!entry || entry.key !== key) clipCache.set(clip.id, (entry = { key, el: clipEl(track, clip) }));
+    clipUsed.add(clip.id);
+    const { el } = entry;
+    el.style.left = `${clip.start * z()}px`;
+    el.classList.toggle('selected', state.sel.clipId === clip.id);
+    el.classList.toggle('muted', !audible(track));
+    return el;
+  }
+
   function clipEl(track, clip) {
-    const w = Math.max(4, clip.length * z());
+    const w =Math.max(4, clip.length * z());
     const cv = h('canvas.clip-cv', { width: Math.min(8000, Math.ceil(w * (window.devicePixelRatio || 1))), height: 46 * (window.devicePixelRatio || 1) });
     const audio = track.kind === 'audio';
     const tags = [];
@@ -394,10 +412,12 @@ export function createArrange(app) {
   function updateMeters(m) {
     for (const [id, [l, r]] of meters) {
       const v = m.tracks.get(id) || [0, 0];
-      l.style.transform = `scaleY(${level(v[0])})`;
-      r.style.transform = `scaleY(${level(v[1])})`;
+      setLevel(l, level(v[0]));
+      setLevel(r, level(v[1]));
     }
   }
+  const shown = new WeakMap();
+  function setLevel(el, v) { if (shown.get(el) !== v) { shown.set(el, v); el.style.transform = `scaleY(${v})`; } }
 
   scroll.addEventListener('wheel', (e) => {
     if (!e.ctrlKey) return;

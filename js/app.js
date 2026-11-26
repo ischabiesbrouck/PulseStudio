@@ -201,19 +201,26 @@ function updateTransport() {
   document.title = `${p.name} - PulseStudio`;
 }
 
+let browserBpm = null;
 function renderAll() {
   updateTransport();
   arrange.render();
   renderPanel();
-  browser.render();
+  // De lijst in de browser hangt alleen van het tempo af; de rest regelt de browser zelf.
+  if (browserBpm !== state.project.bpm) { browserBpm = state.project.bpm; browser.render(); }
 }
+
+// Alleen schrijven wat echt verandert: elke schrijfactie kost de browser een nieuwe opmaak.
+const shown = new WeakMap();
+function setText(el, text) { if (shown.get(el) !== text) { shown.set(el, text); el.textContent = text; } }
+function setScaleX(el, v) { if (shown.get(el) !== v) { shown.set(el, v); el.style.transform = `scaleX(${v})`; } }
 
 function drawPlayhead() {
   const pos = app.playhead();
   arrange.setPlayhead(pos);
   const [bar, beat, six] = formatPosition(pos).split('.');
-  ui.pos.textContent = `${bar.padStart(3, '0')}.${beat}.${six}`;
-  ui.time.textContent = formatTime(pos * 60 / state.project.bpm);
+  setText(ui.pos, `${bar.padStart(3, '0')}.${beat}.${six}`);
+  setText(ui.time, formatTime(pos * 60 / state.project.bpm));
 }
 
 let saveTimer = null;
@@ -238,6 +245,7 @@ async function saveNow() {
 }
 
 subscribe((scope) => {
+  wakeFrames();
   switch (scope) {
     case 'select': state.view.inspectMaster = false; state.view.inspectReturn = null; arrange.updateSelection(); mixer.updateSelection(); if (state.view.panel !== 'mixer') renderPanel(); break;
     case 'params': engine.sync(); break;
@@ -275,7 +283,32 @@ onWarpChange((n) => {
   else if (warpWasBusy) { warpWasBusy = false; updateTransport(); }
 });
 
+// De tekenlus loopt alleen als er iets te bewegen valt: tijdens afspelen, zolang er iets klinkt (plus de tijd die de meters
+// nodig hebben om terug te zakken) en kort na elke handeling. Daarna staat hij stil.
+let frameReq = 0;
+let awakeUntil = 0;
+function wakeFrames(ms = 1500) {
+  awakeUntil = Math.max(awakeUntil, performance.now() + ms);
+  if (!frameReq) frameReq = requestAnimationFrame(frame);
+}
+const METER_FALL = 5000;
+engine.onSound = () => wakeFrames(METER_FALL);
+const loudest = (m) => { let max = Math.max(...m.master); for (const [l, r] of m.tracks.values()) max = Math.max(max, l, r); return max; };
+// Klinkt er nog iets dat niet via de app is gestart (lange galm, plug-in met eigen sequencer)? Dan weer meebewegen.
+setInterval(() => { if (!frameReq && !document.hidden && engine.ctx?.state === 'running' && loudest(engine.meters()) > 1e-3) wakeFrames(METER_FALL); }, 250);
+window.addEventListener('resize', () => wakeFrames());
+document.addEventListener('visibilitychange', () => { if (!document.hidden) wakeFrames(METER_FALL); });
+
+// Muis, toets of aanraking maakt een slapende audio-engine alvast wakker, nog voor de eerste noot.
+for (const type of ['pointermove', 'pointerdown', 'keydown', 'wheel', 'focus']) window.addEventListener(type, () => engine.touch(), { capture: true, passive: true });
+engine.mayRest = () => {
+  const p = state.project;
+  return !recording && !ui.midi.classList.contains('on') && !p?.tracks.some((t) => t.arm || t.kind === 'plugin' || t.inserts.some((i) => i.type === 'wam'))
+    && !p?.masterInserts.some((i) => i.type === 'wam') && !(p?.returns || []).some((r) => r.inserts.some((i) => i.type === 'wam'));
+};
+
 function frame() {
+  frameReq = 0;
   if (state.project) {
     if (engine.playing) {
       const pos = engine.position();
@@ -289,15 +322,16 @@ function frame() {
     }
     if (engine.ctx) {
       const m = engine.meters();
+      if (loudest(m) > 1e-3) awakeUntil = Math.max(awakeUntil, performance.now() + METER_FALL);
       arrange.updateMeters(m);
       const lvl = (x) => clamp((gainToDb(x) + 60) / 66, 0, 1);
-      ui.mmL.style.transform = `scaleX(${lvl(m.master[0])})`;
-      ui.mmR.style.transform = `scaleX(${lvl(m.master[1])})`;
+      setScaleX(ui.mmL, lvl(m.master[0]));
+      setScaleX(ui.mmR, lvl(m.master[1]));
       if (state.view.panel === 'mixer') mixer.updateMeters(m, engine);
       if (state.view.panel === 'sound') for (const v of liveViews) v.tick(engine);
     }
   }
-  requestAnimationFrame(frame);
+  if (!frameReq && (engine.playing || performance.now() < awakeUntil)) frameReq = requestAnimationFrame(frame);
 }
 
 // ---------- Transport ----------
@@ -1005,7 +1039,8 @@ async function runExport() {
       toast(`Klaar: ${files.length} stems in "${safe} - stems.zip".`, 4500);
     } else {
       toast('Exporteren… dit kan even duren.', 60000);
-      const buf = await renderProject(p, buffers, { sampleRate: rate });
+      const buf = await renderProject(p, buffers, { sampleRate: rate, onProgress: (f) => app.say(`Exporteren… ${Math.round(f * 100)}%`) });
+      app.say(null);
       const ch = channelsOf(buf);
       download(new Blob([encodeWav(ch, buf.sampleRate, bits)], { type: 'audio/wav' }), `${safe}.wav`);
       const m = measure(ch, buf.sampleRate);
@@ -1137,7 +1172,7 @@ async function boot() {
     if (last) project = await store.loadProject(last);
   } catch (err) { console.error(err); }
   await openProject(project || demoSong());
-  requestAnimationFrame(frame);
+  wakeFrames();
   window.__psDone?.();
   registerServiceWorker();
 }

@@ -3,7 +3,7 @@
 //   - Code, stijl, lettertypes en iconen komen uit de cache van deze versie. Een nieuwe versie (VERSION ophogen)
 //     wordt op de achtergrond geïnstalleerd; de app meldt dan dat herladen de nieuwe versie geeft.
 // Houd SHELL gelijk aan de modulepreload-lijst in index.html (tests/shell.test.js controleert dat).
-const VERSION = 'pulsestudio-v8';
+const VERSION = 'pulsestudio-v9';
 const SHELL = [
   './', './index.html', './manifest.webmanifest', './css/app.css', './icons/icon.svg',
   './fonts/archivo-latin.woff2', './fonts/archivo-narrow-latin.woff2',

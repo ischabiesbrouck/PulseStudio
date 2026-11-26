@@ -122,6 +122,7 @@ export function synthVoice(ctx, dest, s, pitch, vel, time) {
 
   const voice = {
     end: Infinity,
+    out, // laatste knoop: wordt losgekoppeld als de noot is uitgeklonken (zie TrackChain.sweep)
     release(t) {
       const tc = Math.max(0.005, s.release / 4);
       holdAt(amp.gain, t);
@@ -175,6 +176,7 @@ export function samplerVoice(ctx, dest, s, zone, pitch, vel, time) {
   const natural = looping ? Infinity : time + (dur - offset) / rate;
   const voice = {
     end: natural,
+    out: amp,
     release(t) {
       const tc = Math.max(0.005, s.release / 4);
       holdAt(amp.gain, t);
@@ -390,6 +392,7 @@ export function drumHit(ctx, dest, kit, pitch, vel, time, { buffers, choke } = {
 
   const voice = {
     end,
+    out: node,
     release() {},
     stopNow() {
       const now = ctx.currentTime;

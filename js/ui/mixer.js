@@ -163,13 +163,16 @@ export function createMixer(app) {
       ['l', 'r'].forEach((side, i) => {
         const f = frac(db[i]);
         hd[side] = Math.max(f, hd[side] - 0.02);
-        m[side].firstChild.style.transform = `scaleY(${hd[side]})`;
+        if (m[side].v !== hd[side]) { m[side].v = hd[side]; m[side].firstChild.style.transform = `scaleY(${hd[side]})`; }
       });
       const top = Math.max(...db);
       if (top > hd.peak || now - hd.t > 1200) { hd.peak = Math.max(top, now - hd.t > 1200 ? top : hd.peak); hd.t = now; }
-      for (const side of ['l', 'r']) m[side].lastChild.style.bottom = `${frac(hd.peak) * 100}%`;
-      m.peakEl.textContent = dbText(hd.peak);
-      m.peakEl.classList.toggle('over', hd.peak > -0.1);
+      if (m.peak !== hd.peak) {
+        m.peak = hd.peak;
+        for (const side of ['l', 'r']) m[side].lastChild.style.bottom = `${frac(hd.peak) * 100}%`;
+        m.peakEl.textContent = dbText(hd.peak);
+        m.peakEl.classList.toggle('over', hd.peak > -0.1);
+      }
     };
     set('master', levels.master);
     for (const [id, pair] of levels.tracks) set(id, pair);
